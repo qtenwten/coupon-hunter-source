@@ -93,7 +93,7 @@ test('product parser rejects shipping, tax, old and recommendation prices', (t) 
   t.ok(product.debug.priceCandidates.some((row) => row.context?.includes('Доставка')));
   t.ok(product.debug.priceCandidates.some((row) => row.context?.includes('Налог')));
   t.ok(product.debug.priceCandidates.some((row) => row.recommendation));
-  t.equal(product.parserVersion, '3.3.1');
+  t.equal(product.parserVersion, '3.3.2');
 });
 
 test('selected SKU price updates after a SKU change', (t) => {

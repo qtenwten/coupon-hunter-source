@@ -59,7 +59,8 @@
 
   function findPromoInput() {
     return Array.from(document.querySelectorAll('input')).map((element) => ({ element, score: inputScore(element) }))
-      .filter((row) => row.score >= 100).sort((a, b) => b.score - a.score)[0]?.element || null;
+      .filter((row) => row.score >= 100 && Safety.isVisible(row.element) && !row.element.disabled && !row.element.readOnly)
+      .sort((a, b) => b.score - a.score)[0]?.element || null;
   }
 
   function scopedControls(input) {
@@ -143,7 +144,11 @@
     return new Promise((resolve) => {
       let done = false;
       const finish = (reason) => { if (done) return; done = true; observer.disconnect(); clearTimeout(timer); resolve(reason); };
-      const observer = new MutationObserver(() => { summaryRootCache = null; finish('mutation'); });
+      const observer = new MutationObserver((mutations) => {
+        summaryRootCache = null;
+        if (mutations.some((mutation) => mutation.target?.tagName === 'SCRIPT' || mutation.target?.parentElement?.tagName === 'SCRIPT' || Array.from(mutation.addedNodes || []).some((node) => node?.tagName === 'SCRIPT'))) structuredItemCache = null;
+        finish('mutation');
+      });
       observer.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class', 'aria-live', 'aria-busy', 'aria-checked', 'disabled', 'value'] });
       const timer = setTimeout(() => finish('timeout'), timeoutMs);
     });
@@ -156,7 +161,7 @@
   }
 
   function summaryRoots() {
-    if (summaryRootCache?.every((element) => element?.isConnected !== false)) return summaryRootCache;
+    if (summaryRootCache?.length && summaryRootCache.every((element) => element?.isConnected !== false)) return summaryRootCache;
     const selector = '[data-testid*="summary" i],[data-pl*="summary" i],[data-pl*="total" i],[class*="order-summary" i],[class*="checkout-summary" i],[aria-label*="order summary" i]';
     summaryRootCache = Array.from(document.querySelectorAll(selector)).filter(Safety.isVisible).slice(0, 80);
     return summaryRootCache;
@@ -167,11 +172,27 @@
     for (const element of nodes) {
       if (visited.has(element) || !Safety.isVisible(element)) continue; visited.add(element);
       const text = normalize(element.innerText || element.textContent || '');
-      if (!text || text.length > 260) continue;
-      const kind = C.classifySummaryLabel(text); if (!kind) continue;
-      const quote = P.extractPriceQuotes(text, 'CHECKOUT_SUMMARY').filter((row) => !row.isRange).at(-1); if (!quote) continue;
+      if (!text || text.length > 220) continue;
+      const conceptPatterns = {
+        total: /(?:grand\s*total|order\s*total|amount\s*due|к\s*оплате|итого\s*к\s*оплате|общая\s*сумма|^(?:total|итого)(?:\s|:|$))/i,
+        subtotal: /(?:sub\s*total|товар(?:ы|ов)?\s*(?:на|:)|сумма\s*товар|стоимость\s*товар|^(?:товары|items|merchandise)(?:\s|:|$))/i,
+        shipping: /(?:shipping|delivery|достав|перевоз)/i,
+        tax: /(?:tax|vat|ндс|налог|пошлин|тамож)/i,
+        discount: /(?:discount|promotion|promo|coupon|скидк|купон|промокод|эконом)/i
+      };
+      const concepts = Object.entries(conceptPatterns).filter(([, pattern]) => pattern.test(text)).map(([kind]) => kind);
+      if (concepts.length !== 1) continue;
+      const visibleChildren = Array.from(element.children || []).filter(Safety.isVisible).filter((child) => normalize(child.innerText || child.textContent || ''));
+      if (visibleChildren.length > 3) continue;
+      const kind = concepts[0];
+      const quotes = P.extractPriceQuotes(text, 'CHECKOUT_SUMMARY').filter((row) => !row.isRange);
+      const uniqueQuotes = [...new Map(quotes.map((row) => [`${row.value}|${row.currency || ''}`, row])).values()];
+      const freeShipping = kind === 'shipping' && /(?:^|\s)(?:free|бесплатно)(?:\s|$)/i.test(text) && uniqueQuotes.length === 0;
+      if (!freeShipping && uniqueQuotes.length !== 1) continue;
+      const quote = freeShipping ? { value: 0, currency: null } : uniqueQuotes[0];
       let confidence = source === 'FALLBACK' ? 45 : 65;
       if (/(grand\s*total|order\s*total|к\s*оплате|итого\s*к\s*оплате)/i.test(text)) confidence += 25;
+      if (freeShipping) confidence += 25;
       if (element.matches?.('[data-pl*="total" i],[data-testid*="total" i],[aria-label*="total" i]')) confidence += 10;
       rows.push({ kind, value: quote.value, currency: quote.currency, confidence, source, text });
     }
@@ -231,25 +252,37 @@
     return link;
   }
 
-  function checkoutIdentityScopePresent() {
-    if (['CART', 'CHECKOUT'].includes(P.parsePageType(location.href))) return true;
+  function checkoutIdentityScopeEvidence() {
+    const pageType = P.parsePageType(location.href); const evidenceTypes = [];
+    const routeMatched = ['CART', 'CHECKOUT'].includes(pageType); if (routeMatched) evidenceTypes.push(`CHECKOUT_${pageType}_ROUTE`);
     const marker = document.querySelector('[data-testid*="checkout" i],[data-pl*="checkout" i],[data-testid*="order-confirm" i],[data-pl*="order-confirm" i],[id*="checkout" i],[class*="checkout-page" i],[class*="order-confirm" i]');
-    if (marker && Safety.isVisible(marker)) return true;
+    const markerFound = !!(marker && Safety.isVisible(marker)); if (markerFound) evidenceTypes.push('CHECKOUT_DOM_MARKER');
     const headings = Array.from(document.querySelectorAll('h1,h2,[role="heading"],[aria-level]')).filter(Safety.isVisible).slice(0, 120);
-    if (headings.some((element) => /^(?:оформление\s+заказа|подтверждение\s+заказа|checkout|order\s+(?:confirmation|review)|shopping\s+cart|корзина)(?:\s|$)/i.test(normalize(element.innerText || element.textContent || '')))) return true;
-    return Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(Safety.isVisible).slice(0, 500)
+    const headingFound = headings.some((element) => /^(?:оформление\s+заказа|подтверждение\s+заказа|checkout|order\s+(?:confirmation|review)|shopping\s+cart|корзина)(?:\s|$)/i.test(normalize(element.innerText || element.textContent || '')));
+    if (headingFound) evidenceTypes.push('CHECKOUT_HEADING');
+    const promoFound = !!(findPromoInput() || findRevealControl()); if (promoFound) evidenceTypes.push('CHECKOUT_PROMO_CONTROL');
+    const orderActionFound = Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(Safety.isVisible).slice(0, 500)
       .some((element) => /^(?:оформить\s+заказ|разместить\s+заказ|подтвердить\s+заказ|place\s+order|submit\s+order|confirm\s+order)$/i.test(Safety.labelOf(element)));
+    if (orderActionFound) evidenceTypes.push('CHECKOUT_ORDER_ACTION_READ_ONLY');
+    const strong = routeMatched || (markerFound && (headingFound || promoFound || orderActionFound)) || (headingFound && (promoFound || orderActionFound)) || (promoFound && orderActionFound);
+    return { strong, pageType, routeMatched, markerFound, headingFound, promoFound, orderActionFound, evidenceTypes };
   }
 
   let structuredItemCache = null;
-  function structuredCheckoutItems(visibleIds) {
-    if (!visibleIds.size) return [];
-    const scripts = Array.from(document.querySelectorAll('script[type="application/json"],script#__NEXT_DATA__,script[data-state],script[data-hydration]')).slice(0, 40);
+  let lastStructuredDiagnostics = { structuredCandidateCount: 0, structuredCheckoutScopedCount: 0, structuredUniqueItemIds: 0, structuredUniqueSkuIds: 0, structuredConflicts: [], structuredEvidenceTypes: [] };
+  function structuredCheckoutItems(visibleIds, scope = checkoutIdentityScopeEvidence()) {
+    if (!scope.strong && !visibleIds.size) {
+      lastStructuredDiagnostics = { structuredCandidateCount: 0, structuredCheckoutScopedCount: 0, structuredUniqueItemIds: 0, structuredUniqueSkuIds: 0, structuredConflicts: [], structuredEvidenceTypes: scope.evidenceTypes.slice() };
+      return [];
+    }
+    const scripts = Array.from(document.querySelectorAll('script[type="application/json"],script#__NEXT_DATA__,script[id*="data" i],script[id*="state" i],script[data-state],script[data-hydration]')).slice(0, 40);
     const pathname = (() => { try { return new URL(location.href).pathname; } catch (_) { return ''; } })();
-    const visibleKey = [...visibleIds].sort().join(','); const lengths = scripts.map((script) => String(script.textContent || '').length);
-    if (structuredItemCache?.pathname === pathname && structuredItemCache.visibleKey === visibleKey && structuredItemCache.scripts.length === scripts.length &&
-      structuredItemCache.scripts.every((script, index) => script === scripts[index] && structuredItemCache.lengths[index] === lengths[index])) return structuredItemCache.items;
-    const result = []; let visited = 0; let totalBytes = 0;
+    const visibleKey = [...visibleIds].sort().join(','); const lengths = scripts.map((script) => String(script.textContent || '').length); const scopeKey = `${scope.strong}|${scope.evidenceTypes.join(',')}`;
+    if (structuredItemCache?.pathname === pathname && structuredItemCache.visibleKey === visibleKey && structuredItemCache.scopeKey === scopeKey && structuredItemCache.scripts.length === scripts.length &&
+      structuredItemCache.scripts.every((script, index) => script === scripts[index] && structuredItemCache.lengths[index] === lengths[index])) {
+      lastStructuredDiagnostics = structuredItemCache.diagnostics; return structuredItemCache.items;
+    }
+    const accepted = []; const evidenceTypes = new Set(scope.evidenceTypes); let visited = 0; let totalBytes = 0; let candidateCount = 0; let scopedCount = 0;
     const field = (object, names) => {
       for (const name of names) {
         const key = Object.keys(object).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
@@ -259,30 +292,50 @@
       }
       return null;
     };
-    const walk = (value) => {
+    const walk = (value, path = []) => {
       if (!value || typeof value !== 'object' || visited++ > 60_000) return;
       if (!Array.isArray(value)) {
-        const itemId = field(value, ['itemId', 'item_id', 'productId', 'product_id']);
-        if (itemId && visibleIds.has(itemId)) {
+        const rawItemId = field(value, ['itemId', 'item_id', 'productId', 'product_id']);
+        const itemId = /^\d{6,24}$/.test(rawItemId || '') ? rawItemId : null;
+        if (itemId) {
+          candidateCount += 1;
+          const pathText = path.join('.').toLowerCase();
+          const excluded = /(recommend|suggest|similar|search|history|recent|wishlist|favorite|you.?may.?like)/i.test(pathText);
+          const checkoutScoped = !excluded && (/(?:checkout|order|cart|purchase|trade)[^.]*\.(?:[^.]*\.){0,2}(?:items?|lines?|products?)(?:\.|$)|(?:checkoutitems?|orderitems?|cartitems?|lineitems?|orderlines?|purchaseitems?)(?:\.|$)/i.test(pathText));
+          if (checkoutScoped) scopedCount += 1;
+          if (excluded) evidenceTypes.add('EXCLUDED_NON_PURCHASE_COLLECTION');
+          const visibleMatch = visibleIds.has(itemId);
+          const permitted = visibleIds.size ? visibleMatch : scope.strong && checkoutScoped;
+          if (!permitted || excluded) {
+            for (const [key, child] of Object.entries(value)) walk(child, [...path, key]);
+            return;
+          }
+          evidenceTypes.add(visibleMatch ? 'VISIBLE_ITEM_MATCH' : 'CHECKOUT_SCOPED_JSON');
           const rawSku = field(value, ['skuId', 'sku_id', 'selectedSkuId', 'selected_sku_id', 'variantId', 'variant_id']);
           const rawQuantity = field(value, ['quantity', 'qty', 'buyCount', 'buy_count']);
           const quantity = Number.isFinite(Number(rawQuantity)) && Number(rawQuantity) > 0 && Number(rawQuantity) <= 999 ? Number(rawQuantity) : null;
-          result.push({ itemId, skuId: rawSku && /^[A-Za-z0-9_-]{1,100}$/.test(rawSku) ? rawSku : null, quantity, sellerId: null, rootEvidence: true, evidenceSource: 'STRUCTURED' });
+          accepted.push({ itemId, skuId: rawSku && /^[A-Za-z0-9_-]{1,100}$/.test(rawSku) ? rawSku : null, quantity, sellerId: null, rootEvidence: true, evidenceSource: 'STRUCTURED' });
         }
       }
-      for (const child of Array.isArray(value) ? value : Object.values(value)) walk(child);
+      if (Array.isArray(value)) value.forEach((child) => walk(child, [...path, '[]']));
+      else for (const [key, child] of Object.entries(value)) walk(child, [...path, key]);
     };
     for (const script of scripts) {
       const text = String(script.textContent || '').trim(); totalBytes += text.length;
       if (!text || text.length > 1_000_000 || totalBytes > 2_000_000 || !/^[{[]/.test(text)) continue;
-      try { walk(JSON.parse(text)); } catch (_) {}
+      try { walk(JSON.parse(text), []); } catch (_) {}
     }
-    const grouped = new Map();
-    for (const row of result.slice(0, 300)) {
+    const grouped = new Map(); const conflicts = [];
+    for (const row of accepted.slice(0, 300)) {
       const group = grouped.get(row.itemId) || { itemId: row.itemId, skuIds: new Set(), quantities: new Set() };
       if (row.skuId) group.skuIds.add(row.skuId); if (Number.isFinite(row.quantity)) group.quantities.add(row.quantity); grouped.set(row.itemId, group);
     }
-    const items = [...grouped.values()].map((group) => ({
+    for (const group of grouped.values()) {
+      if (group.skuIds.size > 1) conflicts.push('CONFLICTING_SKU_IDS');
+      if (group.quantities.size > 1) conflicts.push('CONFLICTING_QUANTITIES');
+    }
+    if (!visibleIds.size && grouped.size > 1) conflicts.push('COMPETING_ITEM_IDS_WITHOUT_DOM_CORROBORATION');
+    const items = !visibleIds.size && grouped.size > 1 ? [] : [...grouped.values()].map((group) => ({
       itemId: group.itemId,
       skuId: group.skuIds.size === 1 ? [...group.skuIds][0] : null,
       quantity: group.quantities.size === 1 ? [...group.quantities][0] : null,
@@ -290,7 +343,17 @@
       rootEvidence: true,
       evidenceSource: 'STRUCTURED'
     }));
-    structuredItemCache = { pathname, visibleKey, scripts, lengths, items }; return items;
+    const uniqueSkus = new Set(accepted.map((row) => row.skuId).filter(Boolean));
+    const diagnostics = {
+      structuredCandidateCount: candidateCount,
+      structuredCheckoutScopedCount: scopedCount,
+      structuredUniqueItemIds: grouped.size,
+      structuredUniqueSkuIds: uniqueSkus.size,
+      structuredConflicts: [...new Set(conflicts)],
+      structuredEvidenceTypes: [...evidenceTypes]
+    };
+    lastStructuredDiagnostics = diagnostics;
+    structuredItemCache = { pathname, visibleKey, scopeKey, scripts, lengths, items, diagnostics }; return items;
   }
 
   function mergeCheckoutItems(rows) {
@@ -312,7 +375,8 @@
     const selector = '[data-item-id],[data-itemid],[data-product-id],[data-productid],[data-sku-id],[data-skuid],[data-variant-id],[class*="cart-item" i],[class*="order-item" i],[data-testid*="cart-item" i],[data-testid*="order-item" i],[data-testid*="line-item" i],[data-testid*="product-item" i]';
     const itemRootSelector = '[data-item-id],[data-itemid],[data-product-id],[data-productid],[class*="cart-item" i],[class*="order-item" i],[data-testid*="cart-item" i],[data-testid*="order-item" i],[data-testid*="line-item" i],[data-testid*="product-item" i]';
     const raw = Array.from(document.querySelectorAll(selector)).filter(Safety.isVisible).slice(0, 600);
-    const links = checkoutIdentityScopePresent() ? visibleItemLinks() : [];
+    const scope = checkoutIdentityScopeEvidence();
+    const links = scope.strong ? visibleItemLinks() : [];
     const roots = [...new Set([...raw.map((element) => element.closest?.(itemRootSelector) || element), ...links.map(itemRootForLink)])]; const rows = [];
     for (const root of roots) {
       const link = root.tagName === 'A' && itemIdFromLink(root) ? root : root.querySelector?.('a[href*="/item/"],a[href*="itemId="],a[href*="productId="]');
@@ -329,7 +393,7 @@
       rows.push({ itemId, skuId, quantity, sellerId, rootEvidence, evidenceSource: 'DOM' });
     }
     const visibleIds = new Set(links.map(itemIdFromLink).filter(Boolean));
-    return mergeCheckoutItems([...rows, ...structuredCheckoutItems(visibleIds)]);
+    return mergeCheckoutItems([...rows, ...structuredCheckoutItems(visibleIds, scope)]);
   }
 
   function selectedShippingMethod() {
@@ -392,6 +456,14 @@
         itemIdDetected: items.filter((row) => !!row.itemId).length,
         skuIdDetected: items.filter((row) => !!row.skuId).length,
         quantityDetected: items.filter((row) => Number.isFinite(row.quantity)).length
+      },
+      structured: {
+        structuredCandidateCount: lastStructuredDiagnostics.structuredCandidateCount,
+        structuredCheckoutScopedCount: lastStructuredDiagnostics.structuredCheckoutScopedCount,
+        structuredUniqueItemIds: lastStructuredDiagnostics.structuredUniqueItemIds,
+        structuredUniqueSkuIds: lastStructuredDiagnostics.structuredUniqueSkuIds,
+        structuredConflicts: lastStructuredDiagnostics.structuredConflicts.slice(),
+        structuredEvidenceTypes: lastStructuredDiagnostics.structuredEvidenceTypes.slice()
       },
       selectors: { inputFound: selectors.inputFound, applyFound: selectors.applyFound, revealFound: selectors.revealFound }
     };

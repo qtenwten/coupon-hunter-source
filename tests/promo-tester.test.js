@@ -9,9 +9,10 @@ const box = load(
 );
 const T = box.CouponHunterPromoTester;
 
-function checkoutFixtureDocument(data, { withIdentity = true } = {}) {
+function checkoutFixtureDocument(data, { withIdentity = true, withLink = withIdentity, withStructured = withIdentity } = {}) {
   const heading = new FakeElement({ tag: 'h1', text: data.heading });
   const promo = new FakeElement({ tag: 'button', text: data.promoControl });
+  const input = new FakeElement({ tag: 'input', attrs: { 'aria-label': 'Promo code' } });
   const order = new FakeElement({ tag: 'button', text: data.orderAction });
   const total = new FakeElement({ text: data.summary, attrs: { 'data-pl': 'order-total' } });
   const decoys = (data.decoys || []).map((text) => new FakeElement({ text }));
@@ -20,13 +21,14 @@ function checkoutFixtureDocument(data, { withIdentity = true } = {}) {
   const querySelectorAll = (selector) => {
     if (selector === 'h1,h2,[role="heading"],[aria-level]') return [heading];
     if (selector === 'button,[role="button"],summary' || selector === 'button,[role="button"],input[type="submit"]') return [promo, order];
+    if (selector === 'input') return [input];
     if (selector.startsWith('[data-pl*="total"')) return [total];
     if (selector === 'div,li,p') return decoys;
-    if (selector.startsWith('a[href*="/item/"')) return withIdentity ? [link] : [];
-    if (selector.startsWith('script[type="application/json"')) return withIdentity ? [script] : [];
+    if (selector.startsWith('a[href*="/item/"')) return withLink ? [link] : [];
+    if (selector.startsWith('script[type="application/json"')) return withStructured ? [script] : [];
     return [];
   };
-  return { heading, promo, order, total, decoys, link, script, querySelectorAll };
+  return { heading, promo, input, order, total, decoys, link, script, querySelectorAll };
 }
 
 function scopedControl(label, context = 'Promo code') {
@@ -122,6 +124,27 @@ test('checkout reader skips broad div fallback when a specific total source work
   doc.querySelectorAll = () => [];
 });
 
+test('live RU financial rows keep free shipping separate from 8 923 RUB total', (t) => {
+  const data = fixture('aliexpress-ru-checkout-financial.json');
+  const product = new FakeElement({ text: data.rows.product }); const shipping = new FakeElement({ text: data.rows.shipping });
+  const shippingOption = new FakeElement({ text: data.rows.shippingOption }); const total = new FakeElement({ text: data.rows.total });
+  const container = new FakeElement({ text: data.container, className: 'checkout-summary total-section', children: [product, shipping, shippingOption, total] });
+  container.querySelectorAll = () => [product, shipping, shippingOption, total];
+  doc.querySelectorAll = (selector) => {
+    if (selector.startsWith('[data-pl*="total"')) return [container];
+    if (selector.startsWith('[data-testid*="summary"')) return [container];
+    if (selector === 'div,li,p') return [container, product, shipping, shippingOption, total];
+    return [];
+  };
+  const rows = T.summaryRows(); const breakdown = T.readBreakdown();
+  t.ok(rows.some((row) => row.kind === 'shipping' && row.value === 0));
+  t.ok(rows.some((row) => row.kind === 'total' && row.value === data.expected.total));
+  t.equal(breakdown.shipping, data.expected.shipping); t.equal(breakdown.total, data.expected.total); t.equal(breakdown.currency, data.expected.currency);
+  t.equal(rows.some((row) => row.kind === 'shipping' && row.value === data.expected.total), false);
+  t.equal(rows.some((row) => row.kind === 'total' && row.value === 468), false);
+  container.isConnected = false; doc.querySelectorAll = () => [];
+});
+
 test('checkout item discovery does not query generic data-testid item UI nodes', (t) => {
   const selectors = []; doc.querySelectorAll = (selector) => { selectors.push(selector); return []; };
   t.deep(T.checkoutItems(), []);
@@ -170,6 +193,77 @@ test('live-like RU checkout parses visible 8 923 RUB total and structured item i
   t.equal(context.pageType, data.expected.pageType); t.equal(context.total, data.expected.total); t.equal(context.currency, data.expected.currency);
   t.equal(context.fingerprintQuality, 'STRONG'); t.deep(context.itemIds, [data.expected.itemId]); t.equal(context.checkoutFingerprint.items[0].skuId, data.expected.skuId);
   t.equal(context.available, true);
+  t.equal(context.diagnostics.selectors.inputFound, true); t.equal(context.diagnostics.selectors.applyFound, false); t.equal(context.diagnostics.selectors.revealFound, true);
+  t.equal(page.promo.clicked || 0, 0, 'promo reveal is not clicked before explicit start');
+  doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('structured-only checkout line identity works without visible item IDs', (t) => {
+  const data = fixture('aliexpress-ru-checkout.json'); const page = checkoutFixtureDocument(data, { withLink: false, withStructured: true });
+  const previousUrl = box.location.href; box.location.href = 'https://aliexpress.ru/checkout'; doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext(); const structured = context.diagnostics.structured;
+  t.equal(context.checkoutFingerprint.items.length, 1); t.equal(context.fingerprintQuality, 'STRONG'); t.equal(context.available, true);
+  t.equal(structured.structuredCandidateCount, 1); t.equal(structured.structuredCheckoutScopedCount, 1);
+  t.equal(structured.structuredUniqueItemIds, 1); t.equal(structured.structuredUniqueSkuIds, 1); t.deep(structured.structuredConflicts, []);
+  t.ok(structured.structuredEvidenceTypes.includes('CHECKOUT_SCOPED_JSON'));
+  doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('checkout-scoped structured item is rejected without a strong checkout surface', (t) => {
+  const source = fixture('aliexpress-ru-checkout.json');
+  const script = new FakeElement({ tag: 'script', text: JSON.stringify(source.structuredState), attrs: { type: 'application/json' } });
+  const previousUrl = box.location.href; box.location.href = 'https://aliexpress.ru/item/1005009999999999.html';
+  doc.querySelectorAll = (selector) => selector.startsWith('script[type="application/json"') ? [script] : [];
+  const context = T.checkoutContext();
+  t.equal(context.checkoutFingerprint.items.length, 0); t.equal(context.fingerprintQuality, 'WEAK');
+  t.equal(context.checkoutSurfaceDetected, false); t.equal(context.diagnostics.structured.structuredCandidateCount, 0);
+  doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('one structured checkout line stays MEDIUM when SKU or quantity is unknown', (t) => {
+  const source = fixture('aliexpress-ru-checkout.json');
+  const data = { ...source, structuredState: { checkout: { lineItems: [{ itemId: source.expected.itemId, quantity: null }] } } };
+  const page = checkoutFixtureDocument(data, { withLink: false, withStructured: true }); const previousUrl = box.location.href;
+  box.location.href = 'https://aliexpress.ru/checkout'; doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext();
+  t.equal(context.checkoutFingerprint.items.length, 1); t.equal(context.checkoutFingerprint.items[0].skuId, null); t.equal(context.fingerprintQuality, 'MEDIUM');
+  doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('arbitrary page JSON itemId is never accepted as checkout identity', (t) => {
+  const source = fixture('aliexpress-ru-checkout.json');
+  const data = { ...source, structuredState: { analytics: { product: { itemId: source.expected.itemId, skuId: source.expected.skuId, quantity: 1 } } } };
+  const page = checkoutFixtureDocument(data, { withLink: false, withStructured: true }); const previousUrl = box.location.href;
+  box.location.href = 'https://aliexpress.ru/checkout'; doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext();
+  t.equal(context.checkoutFingerprint.items.length, 0); t.equal(context.fingerprintQuality, 'WEAK');
+  t.equal(context.diagnostics.structured.structuredCandidateCount, 1); t.equal(context.diagnostics.structured.structuredCheckoutScopedCount, 0);
+  doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('recommendation structured itemId is excluded from checkout identity', (t) => {
+  const source = fixture('aliexpress-ru-checkout.json');
+  const data = { ...source, structuredState: { checkout: { recommendationItems: [{ itemId: source.expected.itemId, skuId: source.expected.skuId, quantity: 1 }] } } };
+  const page = checkoutFixtureDocument(data, { withLink: false, withStructured: true }); const previousUrl = box.location.href;
+  box.location.href = 'https://aliexpress.ru/checkout'; doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext();
+  t.equal(context.checkoutFingerprint.items.length, 0); t.equal(context.fingerprintQuality, 'WEAK');
+  t.ok(context.diagnostics.structured.structuredEvidenceTypes.includes('EXCLUDED_NON_PURCHASE_COLLECTION'));
+  doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('competing structured checkout itemIds downgrade to no guessed identity', (t) => {
+  const source = fixture('aliexpress-ru-checkout.json');
+  const data = { ...source, structuredState: { checkoutItems: [
+    { itemId: source.expected.itemId, skuId: 'SKU-A', quantity: 1 },
+    { itemId: '1005009999999999', skuId: 'SKU-B', quantity: 1 }
+  ] } };
+  const page = checkoutFixtureDocument(data, { withLink: false, withStructured: true }); const previousUrl = box.location.href;
+  box.location.href = 'https://aliexpress.ru/checkout'; doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext();
+  t.equal(context.checkoutFingerprint.items.length, 0); t.equal(context.fingerprintQuality, 'WEAK');
+  t.equal(context.diagnostics.structured.structuredUniqueItemIds, 2);
+  t.ok(context.diagnostics.structured.structuredConflicts.includes('COMPETING_ITEM_IDS_WITHOUT_DOM_CORROBORATION'));
   doc.querySelectorAll = () => []; box.location.href = previousUrl;
 });
 
@@ -194,6 +288,7 @@ test('copied widget diagnostics exclude query secrets and personal checkout data
   const serialized = JSON.stringify(T.checkoutContext().diagnostics);
   t.ok(!serialized.includes('checkoutToken')); t.ok(!serialized.includes('redacted')); t.ok(!serialized.includes('Иван Иванов'));
   t.ok(!serialized.includes('private@example.com')); t.ok(!serialized.includes('+7 999')); t.match(serialized, /"pathname":"\/p\/order\/confirm\.html"/);
+  t.ok(!serialized.includes(data.expected.itemId)); t.ok(!serialized.includes(data.expected.skuId));
   doc.querySelectorAll = () => []; doc.body = previousBody; box.location.href = previousUrl;
 });
 

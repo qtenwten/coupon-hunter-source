@@ -66,6 +66,14 @@ test('checkout-like surface stays visible when fingerprint is WEAK and start rem
   const harness = createHarness({ context: { checkoutSurfaceDetected: true, available: false, reason: 'Не удалось надёжно определить состав заказа', diagnostics } });
   const view = await harness.controller.initialize();
   t.equal(view.visible, true); t.equal(view.available, false); t.equal(view.state, 'IDLE'); t.equal(view.canStart, false); t.deep(harness.commands, []);
+  t.equal(view.foundCount, 60); t.equal(view.applicableCount, null); t.equal(harness.refreshCalls, 1);
+});
+
+test('blocked verifier still loads library while applicability remains unknown', async (t) => {
+  const harness = createHarness({ context: { checkoutSurfaceDetected: true, available: false, fingerprintQuality: 'WEAK' } });
+  const view = await harness.controller.initialize();
+  t.equal(view.foundCount, 60); t.equal(view.applicableCount, null); t.equal(view.canStart, false);
+  const source = fs.readFileSync(`${ROOT}/src/checkout-widget.js`, 'utf8'); t.match(source, /view\.applicableCount \?\? '—'/);
 });
 
 test('checkout candidate remains visible when independent evidence is not yet sufficient', async (t) => {

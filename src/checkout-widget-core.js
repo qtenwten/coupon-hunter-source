@@ -93,7 +93,7 @@
       const recent = results.slice(-4); if (best && !recent.includes(best)) recent.unshift(best);
       return {
         state, mode: model.mode, visible: !!(model.context?.checkoutSurfaceCandidate ?? model.context?.checkoutSurfaceDetected), available: !!model.context?.available,
-        foundCount: model.library.length, applicableCount: model.plan?.diagnostics?.eligible || 0,
+        foundCount: model.library.length, applicableCount: model.plan ? model.plan.diagnostics?.eligible ?? 0 : null,
         queueCount: total, progress, currentCode: session?.current || null,
         bestCode: best?.code || null, bestSaving: finite(Number(best?.saving)), currency: best?.priceAfter?.currency || best?.priceBefore?.currency || session?.currency || model.context?.currency || null,
         recentResults: recent.slice(-5).map((row) => ({ code: row.code, tone: resultTone(row), label: resultLabel(row), saving: finite(Number(row.saving)), verificationStatus: row.verificationStatus })),
@@ -110,11 +110,14 @@
       try {
         model.context = await dependencies.getContext();
         model.session = await dependencies.loadSession?.() || null;
-        if (!model.context?.available) { model.library = []; model.plan = null; notify(); return view(); }
+        const visible = !!(model.context?.checkoutSurfaceCandidate ?? model.context?.checkoutSurfaceDetected);
+        if (!visible) { model.library = []; model.plan = null; notify(); return view(); }
         if (refreshFeed && typeof dependencies.refreshFeed === 'function') {
           try { model.feedStatus = await dependencies.refreshFeed(false); } catch (error) { model.feedStatus = { ok: false, error: error?.message || String(error) }; }
         }
-        model.library = await dependencies.loadLibrary(); rebuildPlan(); notify(); return view();
+        model.library = await dependencies.loadLibrary();
+        if (model.context?.available) rebuildPlan(); else model.plan = null;
+        notify(); return view();
       } catch (error) { model.error = error?.message || String(error); notify(); return view(); }
     }
 

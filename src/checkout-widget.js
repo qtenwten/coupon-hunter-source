@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__COUPON_HUNTER_CHECKOUT_WIDGET_V331__) return;
-  window.__COUPON_HUNTER_CHECKOUT_WIDGET_V331__ = true;
+  if (window.__COUPON_HUNTER_CHECKOUT_WIDGET_V332__) return;
+  window.__COUPON_HUNTER_CHECKOUT_WIDGET_V332__ = true;
 
   const Core = globalThis.CouponHunterCheckoutWidgetCore;
   const Checkout = globalThis.CouponHunterCheckoutCore;
@@ -129,7 +129,7 @@
       return;
     }
     panel = panel || buildPanel(); panel.hidden = false; panel.setAttribute('data-ch-state', view.state);
-    setText(panel, 'status', statusText(view)); setText(panel, 'found', view.foundCount); setText(panel, 'applicable', view.applicableCount); setText(panel, 'message', primaryMessage(view));
+    setText(panel, 'status', statusText(view)); setText(panel, 'found', view.foundCount); setText(panel, 'applicable', view.applicableCount ?? '—'); setText(panel, 'message', primaryMessage(view));
     const diagnostics = view.diagnostics || {}; const financial = diagnostics.financial || {}; const fingerprint = diagnostics.fingerprint || {}; const items = diagnostics.items || {}; const selectors = diagnostics.selectors || {};
     const diagnosticsRoot = panel.querySelector('[data-ch="diagnostics"]'); diagnosticsRoot.hidden = view.available;
     setText(panel, 'diag-page', diagnostics.pageType || 'UNKNOWN'); setText(panel, 'diag-surface', diagnostics.checkoutSurfaceDetected ? 'YES' : 'NO');
