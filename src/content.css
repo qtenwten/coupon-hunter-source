@@ -31,3 +31,29 @@
 #coupon-hunter-panel .ch-error { color:#ffb0a8; }
 #coupon-hunter-panel.ch-collapsed .ch-body { display:none; }
 #coupon-hunter-panel .ch-toggle { appearance:none; border:0; background:none; color:#fff; padding:0 2px; min-width:auto; flex:0; font-size:17px; opacity:.7; }
+#coupon-hunter-panel[data-ch-surface="checkout"] { width: 340px; }
+#coupon-hunter-panel .ch-checkout-body { display:flex; flex-direction:column; gap:10px; }
+#coupon-hunter-panel .ch-promo-stats { display:flex; justify-content:space-between; gap:12px; color:rgba(255,255,255,.76); }
+#coupon-hunter-panel .ch-promo-stats b { color:#fff; }
+#coupon-hunter-panel .ch-ready-message { min-height:36px; padding:9px 10px; border-radius:9px; background:rgba(255,255,255,.07); color:rgba(255,255,255,.88); }
+#coupon-hunter-panel .ch-primary-wide { width:100%; padding:10px 12px; background:#ff5a31; color:#fff; }
+#coupon-hunter-panel .ch-primary-wide:disabled { cursor:not-allowed; opacity:.45; }
+#coupon-hunter-panel .ch-modes { display:grid; gap:5px; font-size:12px; color:rgba(255,255,255,.72); }
+#coupon-hunter-panel .ch-modes label { display:flex; align-items:center; gap:7px; cursor:pointer; }
+#coupon-hunter-panel .ch-modes input { margin:0; accent-color:#ff5a31; }
+#coupon-hunter-panel .ch-progress { padding:9px 10px; border-radius:9px; background:rgba(78,137,255,.14); }
+#coupon-hunter-panel .ch-progress-title { font-size:11px; opacity:.72; margin-bottom:4px; }
+#coupon-hunter-panel .ch-progress [data-ch="current"] { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; opacity:.8; }
+#coupon-hunter-panel .ch-best { display:grid; grid-template-columns:1fr auto; gap:3px 8px; padding:10px; border:1px solid rgba(121,214,87,.36); border-radius:10px; background:rgba(80,174,57,.13); }
+#coupon-hunter-panel .ch-best span { grid-column:1 / -1; font-size:11px; color:#bcebad; }
+#coupon-hunter-panel .ch-best b { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
+#coupon-hunter-panel .ch-best strong { color:#bdf59f; }
+#coupon-hunter-panel .ch-results { display:grid; gap:5px; max-height:132px; overflow:auto; }
+#coupon-hunter-panel .ch-result { padding:7px 8px; border-radius:8px; background:rgba(255,255,255,.055); font-size:11px; overflow-wrap:anywhere; }
+#coupon-hunter-panel .ch-success { color:#c9ffae; }
+#coupon-hunter-panel .ch-rejected { color:#ffc2ba; }
+#coupon-hunter-panel .ch-unknown { color:#ffe2a1; }
+#coupon-hunter-panel .ch-checkout-actions { margin-top:0; }
+#coupon-hunter-panel .ch-checkout-actions button:not(.ch-secondary) { background:#b9f59d; }
+#coupon-hunter-panel[data-ch-state="SAFETY_STOP"] .ch-ready-message,
+#coupon-hunter-panel[data-ch-state="ERROR"] .ch-ready-message { background:rgba(218,74,57,.16); color:#ffd0ca; }

@@ -35,7 +35,7 @@ for (const label of ['Apply', 'Apply coupon', 'Apply code', 'Redeem', 'Use coupo
   });
 }
 
-for (const label of ['Place order', 'Apply for credit', 'Apply address', 'Checkout', 'Buy now']) {
+for (const label of ['Place order', 'Pay Now', 'Buy now', 'Оформить заказ', 'Оплатить', 'Купить', 'Apply for credit', 'Apply address', 'Checkout']) {
   test(`Apply scoring rejects: ${label}`, (t) => {
     const { input, button } = scopedControl(label); t.equal(T.scoreApplyControl(button, input), -Infinity, label);
   });
@@ -116,6 +116,20 @@ test('checkout item identity never uses seller display text as sellerId', (t) =>
   doc.querySelectorAll = () => [root];
   const items = T.checkoutItems();
   t.equal(items.length, 1); t.equal(items[0].itemId, '12345'); t.equal(items[0].sellerId, null);
+  doc.querySelectorAll = () => [];
+});
+
+test('checkout context is available with reliable cart identity while promo input is collapsed', (t) => {
+  const total = new FakeElement({ text: 'Итого к оплате 9 990 ₽', attrs: { 'data-pl': 'order-total' } });
+  const item = new FakeElement({ attrs: { 'data-item-id': '12345', 'data-quantity': '1' } });
+  doc.querySelectorAll = (selector) => {
+    if (selector.startsWith('[data-pl*="total"')) return [total];
+    if (selector.startsWith('[data-item-id]')) return [item];
+    return [];
+  };
+  const context = T.checkoutContext();
+  t.equal(context.available, true); t.equal(context.pageType, 'CHECKOUT'); t.equal(context.fingerprintQuality, 'MEDIUM');
+  t.deep(context.itemIds, ['12345']); t.equal(context.total, 9990);
   doc.querySelectorAll = () => [];
 });
 

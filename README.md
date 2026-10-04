@@ -1,8 +1,16 @@
-# Coupon Hunter v3.2.2
+# Coupon Hunter v3.3.0
 
 Локальное расширение Manifest V3 для Chrome desktop и Яндекс Браузера на Chromium. Оно анализирует страницы AliExpress, хранит данные в `chrome.storage.local` и проверяет только явно найденные или введённые промокоды. Случайные коды не генерируются, brute force не выполняется.
 
-## Что добавлено в v3.2.2
+## Что добавлено в v3.3.0
+
+- На корзине/checkout появился основной floating widget Promo Intelligence со состояниями `IDLE`, `READY`, `TESTING`, `FOUND_BEST`, `COMPLETE_NO_SAVING`, `STOPPED`, `SAFETY_STOP`, `ERROR`.
+- Виджет загружает подписанную базу и строит ranked applicable queue, но запускает `CH_TEST_PROMOS` только после явного нажатия «Подобрать лучший промокод».
+- Standard проверяет до 30, Deep — до 50 top-ranked кандидатов. Прогресс, последние результаты и текущий BEST восстанавливаются из `promoTestSession`.
+- Проверенный BEST после тестовой попытки не остаётся применённым; окончательное применение возможно только отдельной кнопкой «Применить лучший».
+- Popup сохранён как расширенный диагностический интерфейс, но для обычного checkout-сценария больше не обязателен.
+
+## Основа v3.2.2
 
 - `sourceClaims` compacted по `promo code + sourceGroup + sourceId`: сохраняются последнее наблюдение, first/last timestamps, observation count и максимум 8 material changes; до 32 claims на код.
 - Trust и corroboration считаются по независимым `sourceGroup`, повторные polls одного источника не повышают уверенность.
@@ -53,6 +61,9 @@
 - `src/verifier-engine.js` — тестируемая state machine очереди, fingerprint guard и привязка BEST к checkout.
 - `src/safety.js` — единая политика безопасного программного клика.
 - `src/promo-tester.js` — безопасная state machine, DOM-адаптер checkout и изоляция попыток.
+- `src/checkout-widget-core.js` — тестируемая модель checkout-native UI и только явные команды verifier.
+- `src/checkout-widget.js` — floating widget, прогресс, режимы, BEST и восстановление `promoTestSession`.
+- `src/background.js` — безопасное обновление подписанного data-only production feed для checkout widget.
 - `src/storage.js` — compacted `CouponCandidateRegistry`, раздельные local/remote/verification state, storage diagnostics и soft budget.
 - `src/promo-constants.js` — централизованные лимиты library/feed/live queue.
 - `src/promo-feed.js` — schema v3 lifecycle/reconciliation, безопасная загрузка и cache policy недоверенного JSON feed.
@@ -85,9 +96,9 @@ Production feed URL зашит в extension: `https://qsen.ru/coupon-hunter-sour
 
 ## Проверка промокодов
 
-1. Добавьте свои коды в popup. Найденные на ранее открытых страницах коды уже находятся в локальном registry.
+1. Добавьте свои коды в popup при необходимости. Найденные на ранее открытых страницах коды уже находятся в локальном registry.
 2. Откройте корзину или checkout и проверьте состав заказа, SKU, количество, адрес, доставку и способ оплаты самостоятельно.
-3. Нажмите «Стандартная проверка» (до 30 attempts) или явно выберите «Глубокая проверка» (до 50). Запуск никогда не происходит автоматически.
+3. В floating widget выберите Standard (до 30 attempts) или Deep (до 50) и нажмите «Подобрать лучший промокод». Запуск никогда не происходит автоматически.
 4. Verifier фиксирует baseline, применяет один код, ждёт перерасчёта, классифицирует ответ и измеряет `baselineTotal - resultingTotal`.
 5. Если код был применён, verifier удаляет его и подтверждает возврат к baseline до следующей попытки.
 6. `BEST` означает проверенный результат с положительной фактической экономией и восстановленным baseline. «Самый выгодный» показывается только при доказанном полном покрытии eligible-кандидатов; иначе UI пишет «Лучший из проверенных».

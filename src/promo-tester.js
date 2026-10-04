@@ -375,28 +375,74 @@
 
   function safeUrl() { try { const url = new URL(location.href); return `${url.origin}${url.pathname}`; } catch (_) { return null; } }
 
+  function checkoutContext() {
+    const pageType = P.parsePageType(location.href);
+    const binding = C.checkoutBinding(location.href, pageType);
+    const checkout = readCheckout();
+    const fingerprint = checkout.fingerprint || {};
+    const financial = checkout.financial || {};
+    const supportedPage = ['CART', 'CHECKOUT'].includes(binding.pageClass);
+    const reliableIdentity = verifier.fingerprintIsReliable(fingerprint);
+    const hasTotal = Number.isFinite(financial.total);
+    return {
+      available: supportedPage && reliableIdentity && hasTotal,
+      pageType,
+      binding,
+      checkoutFingerprint: fingerprint,
+      currency: financial.currency || fingerprint.currency || null,
+      subtotal: financial.subtotal,
+      orderTotal: financial.total,
+      total: financial.total,
+      itemIds: (fingerprint.items || []).map((row) => row.itemId).filter(Boolean),
+      sellerIds: (fingerprint.items || []).map((row) => row.sellerId).filter(Boolean),
+      region: null,
+      regionConfidence: 0,
+      isNewUser: null,
+      newUserStatusConfidence: 0,
+      fingerprintQuality: fingerprint.quality || 'WEAK',
+      reason: !supportedPage ? 'Откройте корзину или checkout AliExpress' : !reliableIdentity ? 'Не удалось надёжно определить состав корзины' : !hasTotal ? 'Не удалось определить итоговую сумму заказа' : null
+    };
+  }
+
   async function diagnostics() {
     const { promoTestSession = null, couponCandidates = [] } = await chrome.storage.local.get(['promoTestSession', 'couponCandidates']); const checkout = readCheckout();
     return { pageType: P.parsePageType(location.href), url: safeUrl(), locale: document.documentElement?.lang || navigator.language || null, checkoutState: checkout.financial, checkoutFingerprint: checkout.fingerprint, selectorMatches: selectorDiagnostics(), couponCandidates, verificationResults: promoTestSession?.results || [], parserVersion: P.parserVersion, timestamp: new Date().toISOString() };
   }
 
+  async function executeCommand(message = {}) {
+    if (message.type === 'CH_PROMO_TESTER_STATUS') {
+      const context = checkoutContext();
+      return { available: context.available, pageType: context.pageType, message: context.available ? 'Checkout готов к проверке промокодов' : context.reason };
+    }
+    if (message.type === 'CH_TEST_PROMOS') {
+      if (running) return { status: 'BUSY', message: 'Проверка уже выполняется' };
+      running = true; cancelRequested = false;
+      try { return await testCodes(message.candidates || message.codes || [], message.queueMeta || null); }
+      catch (error) {
+        const result = { status: 'ERROR', stopReason: error?.message || String(error), results: [] };
+        await saveSession(result).catch(() => {}); return result;
+      } finally { running = false; }
+    }
+    if (message.type === 'CH_CANCEL_PROMO_TEST') { cancelRequested = true; return { status: running ? 'CANCELLING' : 'IDLE' }; }
+    if (message.type === 'CH_APPLY_BEST_PROMO') {
+      try { return await applyBestExplicitly(message.code); }
+      catch (error) { return { status: 'ERROR', message: error?.message || String(error) }; }
+    }
+    if (message.type === 'CH_GET_CHECKOUT_DIAGNOSTICS') return diagnostics();
+    return null;
+  }
+
   globalThis.CouponHunterPromoTester = {
     normalizeCodes, normalizeCandidateQueue, inputScore, scoreApplyControl, scoreRemoveControl, findApplyButton, findRemoveButton,
     readBreakdown, readCheckout, summaryRows, checkoutItems, selectedShippingMethod, appliedIndicator, existingPlatformCode, selectorDiagnostics, diagnostics,
+    checkoutContext, executeCommand,
     isForbiddenActionLabel: Safety.isForbiddenActionLabel
   };
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message?.type === 'CH_PROMO_TESTER_STATUS') { const input = findPromoInput(); sendResponse({ available: !!input && !!findApplyButton(input), pageType: P.parsePageType(location.href), message: input ? 'Поле промокода найдено' : 'Откройте корзину/checkout и раскройте поле промокода' }); return false; }
-    if (message?.type === 'CH_TEST_PROMOS') {
-      if (running) { sendResponse({ status: 'BUSY', message: 'Проверка уже выполняется' }); return false; }
-      running = true; cancelRequested = false;
-      testCodes(message.candidates || message.codes || [], message.queueMeta || null).then(sendResponse).catch(async (error) => { const result = { status: 'ERROR', stopReason: error?.message || String(error), results: [] }; await saveSession(result).catch(() => {}); sendResponse(result); }).finally(() => { running = false; });
-      return true;
-    }
-    if (message?.type === 'CH_CANCEL_PROMO_TEST') { cancelRequested = true; sendResponse({ status: running ? 'CANCELLING' : 'IDLE' }); return false; }
-    if (message?.type === 'CH_APPLY_BEST_PROMO') { applyBestExplicitly(message.code).then(sendResponse).catch((error) => sendResponse({ status: 'ERROR', message: error?.message || String(error) })); return true; }
-    if (message?.type === 'CH_GET_CHECKOUT_DIAGNOSTICS') { diagnostics().then(sendResponse); return true; }
-    return false;
+    const supported = new Set(['CH_PROMO_TESTER_STATUS', 'CH_TEST_PROMOS', 'CH_CANCEL_PROMO_TEST', 'CH_APPLY_BEST_PROMO', 'CH_GET_CHECKOUT_DIAGNOSTICS']);
+    if (!supported.has(message?.type)) return false;
+    executeCommand(message).then(sendResponse);
+    return true;
   });
 })();

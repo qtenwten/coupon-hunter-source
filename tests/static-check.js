@@ -43,5 +43,6 @@ const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'u
 if (manifest.version !== require(path.join(ROOT, 'package.json')).version) throw new Error('Manifest/package version mismatch');
 const contentFiles = manifest.content_scripts.flatMap((row) => row.js || []);
 for (const file of contentFiles) if (!fs.existsSync(path.join(ROOT, file))) throw new Error(`Missing manifest script: ${file}`);
+if (manifest.background?.service_worker && !fs.existsSync(path.join(ROOT, manifest.background.service_worker))) throw new Error(`Missing service worker: ${manifest.background.service_worker}`);
 
 console.log(`Static checks: OK (${jsFiles.length} JavaScript files, popup/manifest/JSON validated)`);

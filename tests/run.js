@@ -11,6 +11,7 @@ require('./page-adapter.test');
 require('./safety.test');
 require('./promo-tester.test');
 require('./verifier-behavior.test');
+require('./checkout-widget.test');
 require('./search.test');
 require('./manifest.test');
 require('./workflow.test');

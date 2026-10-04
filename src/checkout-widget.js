@@ -1,0 +1,150 @@
+(() => {
+  'use strict';
+  if (window.__COUPON_HUNTER_CHECKOUT_WIDGET_V330__) return;
+  window.__COUPON_HUNTER_CHECKOUT_WIDGET_V330__ = true;
+
+  const Core = globalThis.CouponHunterCheckoutWidgetCore;
+  const Checkout = globalThis.CouponHunterCheckoutCore;
+  const Intelligence = globalThis.CouponHunterPromoIntelligence;
+  const Limits = globalThis.CouponHunterPromoConstants;
+  const Store = globalThis.CouponHunterStorage;
+  const Tester = globalThis.CouponHunterPromoTester;
+  const Adapter = globalThis.CouponHunterPageAdapter;
+  if (!Core || !Checkout || !Intelligence || !Limits || !Store || !Tester) return;
+
+  let panel = null; let lastUrl = location.href; let actionMessage = null;
+  const currencySymbol = (currency) => ({ RUB: '₽', USD: '$', EUR: '€', GBP: '£' }[currency] || currency || '');
+  const money = (value, currency) => Number.isFinite(value) ? `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(value)} ${currencySymbol(currency)}`.trim() : '—';
+
+  function runtimeMessage(message) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(message, (response) => {
+        const error = chrome.runtime.lastError;
+        if (error) reject(new Error(error.message)); else resolve(response);
+      });
+    });
+  }
+
+  function sessionMatchesContext(session, context) {
+    const binding = context?.binding;
+    if (!session || !binding || session.origin !== binding.origin || session.pageClass !== binding.pageClass) return false;
+    if (session.pathClass && binding.pathClass !== session.pathClass) return false;
+    return !!(session.checkoutFingerprint && context.checkoutFingerprint && Checkout.sameCheckoutFingerprint(session.checkoutFingerprint, context.checkoutFingerprint));
+  }
+
+  function buildPanel() {
+    const existing = document.getElementById('coupon-hunter-panel');
+    if (existing?.getAttribute('data-ch-surface') === 'checkout') return existing;
+    if (existing) existing.remove();
+    const root = document.createElement('aside'); root.id = 'coupon-hunter-panel'; root.setAttribute('data-ch-surface', 'checkout');
+    root.innerHTML = `
+      <div class="ch-head"><div><span class="ch-brand">Coupon Hunter</span> <span class="ch-status" data-ch="status">готовлю базу…</span></div><button class="ch-toggle" data-ch="toggle" type="button" title="Свернуть">−</button></div>
+      <div class="ch-body ch-checkout-body">
+        <div class="ch-promo-stats"><span>Найдено: <b data-ch="found">0</b> кодов</span><span>Подходит для заказа: <b data-ch="applicable">0</b></span></div>
+        <div class="ch-ready-message" data-ch="message">Проверяю состав заказа…</div>
+        <button class="ch-primary-wide" data-ch="start" type="button">Подобрать лучший промокод</button>
+        <div class="ch-modes" data-ch="modes">
+          <label><input type="radio" name="ch-mode" value="STANDARD" checked> Стандартный — до 30</label>
+          <label><input type="radio" name="ch-mode" value="DEEP"> Глубокий — до 50</label>
+        </div>
+        <div class="ch-progress" data-ch="progress" hidden>
+          <div class="ch-progress-title" data-ch="progress-title">Проверяем промокоды</div>
+          <div><b data-ch="progress-count">0 из 0</b><span data-ch="current"></span></div>
+        </div>
+        <div class="ch-best" data-ch="best" hidden><span data-ch="best-label">Лучший сейчас</span><b data-ch="best-code">—</b><strong data-ch="best-saving">—</strong></div>
+        <div class="ch-results" data-ch="results"></div>
+        <div class="ch-actions ch-checkout-actions"><button class="ch-secondary" data-ch="stop" type="button" hidden>Остановить</button><button data-ch="apply-best" type="button" hidden>Применить лучший</button></div>
+      </div>`;
+    document.documentElement.appendChild(root);
+    root.querySelector('[data-ch="toggle"]').addEventListener('click', () => {
+      root.classList.toggle('ch-collapsed'); root.querySelector('[data-ch="toggle"]').textContent = root.classList.contains('ch-collapsed') ? '+' : '−';
+    });
+    root.querySelector('[data-ch="start"]').addEventListener('click', async () => { actionMessage = null; await controller.start(); });
+    root.querySelector('[data-ch="stop"]').addEventListener('click', async () => { actionMessage = 'Остановка после текущей безопасной операции…'; render(controller.view()); await controller.stop(); });
+    root.querySelector('[data-ch="apply-best"]').addEventListener('click', async () => {
+      actionMessage = null; const response = await controller.applyBest();
+      actionMessage = response?.status === 'APPLIED' ? 'Лучший код применён. Проверьте итог перед оформлением заказа.' : response?.message || 'Код не применён.'; render(controller.view());
+    });
+    for (const input of root.querySelectorAll('input[name="ch-mode"]')) input.addEventListener('change', () => { if (input.checked) controller.setMode(input.value); });
+    return root;
+  }
+
+  function setText(root, name, value) { const element = root.querySelector(`[data-ch="${name}"]`); if (element) element.textContent = value ?? ''; }
+
+  function statusText(view) {
+    if (view.state === Core.STATES.READY) return 'готов к проверке';
+    if ([Core.STATES.TESTING, Core.STATES.FOUND_BEST].includes(view.state) && view.sessionStatus === 'TESTING') return '● проверка идёт';
+    if (view.state === Core.STATES.FOUND_BEST) return '● лучший найден';
+    if (view.state === Core.STATES.COMPLETE_NO_SAVING) return 'проверка завершена';
+    if ([Core.STATES.SAFETY_STOP, Core.STATES.ERROR].includes(view.state)) return '● остановлено';
+    return 'ожидание checkout';
+  }
+
+  function primaryMessage(view) {
+    if (actionMessage) return actionMessage;
+    if (view.message) return view.message;
+    if (view.sessionStatus === 'TESTING') return `Проверяем ${view.progress} из ${view.queueCount}`;
+    if (view.completed && view.bestCode) return `Проверено ${view.recentResults.length ? view.progress : 0} кодов. Лучший: −${money(view.bestSaving, view.currency)}`;
+    if (view.state === Core.STATES.COMPLETE_NO_SAVING) return `Проверено ${view.progress} кодов. Подтверждённой экономии не найдено.`;
+    if (view.state === Core.STATES.READY) return `${view.applicableCount} промокодов подходят для проверки`;
+    if (view.state === Core.STATES.STOPPED) return 'Проверка остановлена пользователем.';
+    return 'Проверка запускается только по вашему нажатию.';
+  }
+
+  function renderResults(root, view) {
+    const container = root.querySelector('[data-ch="results"]'); container.replaceChildren();
+    for (const row of view.recentResults) {
+      const item = document.createElement('div'); item.className = `ch-result ch-${row.tone}`;
+      const icon = row.tone === 'success' ? '✓' : row.tone === 'unknown' ? '?' : '×';
+      item.textContent = `${icon} ${row.code} — ${row.tone === 'success' ? `экономия ${money(row.saving, view.currency)}` : row.label}`;
+      container.appendChild(item);
+    }
+  }
+
+  function render(view) {
+    if (!view.available) {
+      if (panel?.getAttribute('data-ch-surface') === 'checkout') { panel.remove(); panel = null; }
+      return;
+    }
+    panel = panel || buildPanel(); panel.hidden = false; panel.setAttribute('data-ch-state', view.state);
+    setText(panel, 'status', statusText(view)); setText(panel, 'found', view.foundCount); setText(panel, 'applicable', view.applicableCount); setText(panel, 'message', primaryMessage(view));
+    const active = view.sessionStatus === 'TESTING'; const progress = panel.querySelector('[data-ch="progress"]'); progress.hidden = !active;
+    setText(panel, 'progress-title', view.bestCode ? 'Проверяем промокоды · лучший уже найден' : 'Проверяем промокоды');
+    setText(panel, 'progress-count', `${view.progress} из ${view.queueCount}`); setText(panel, 'current', view.currentCode ? ` · ${view.currentCode}` : '');
+    const best = panel.querySelector('[data-ch="best"]'); best.hidden = !view.bestCode;
+    setText(panel, 'best-label', view.completed ? 'Лучший промокод' : 'Лучший сейчас');
+    setText(panel, 'best-code', view.bestCode || '—'); setText(panel, 'best-saving', view.bestCode ? `−${money(view.bestSaving, view.currency)}` : '—');
+    const start = panel.querySelector('[data-ch="start"]'); start.hidden = active; start.disabled = !view.canStart;
+    panel.querySelector('[data-ch="modes"]').hidden = active;
+    for (const input of panel.querySelectorAll('input[name="ch-mode"]')) { input.checked = input.value === view.mode; input.disabled = active; }
+    const stop = panel.querySelector('[data-ch="stop"]'); stop.hidden = !view.canStop;
+    const apply = panel.querySelector('[data-ch="apply-best"]'); apply.hidden = !view.canApplyBest;
+    renderResults(panel, view);
+  }
+
+  const controller = Core.createController({
+    limits: Limits,
+    getContext: () => Tester.checkoutContext(),
+    loadSession: async () => (await chrome.storage.local.get('promoTestSession')).promoTestSession || null,
+    refreshFeed: async (force) => {
+      const response = await runtimeMessage({ type: 'CH_REFRESH_PROMO_FEED', force: force === true });
+      if (!response?.ok) throw new Error(response?.error || 'FEED_REFRESH_FAILED'); return response;
+    },
+    loadLibrary: () => Store.load(),
+    buildQueue: (library, context, options) => Intelligence.buildQueue(library, context, options),
+    sendCommand: (message) => Tester.executeCommand(message),
+    sessionMatchesContext,
+    onChange: render
+  });
+
+  controller.initialize();
+  chrome.storage.onChanged.addListener((changes, area) => { if (area === 'local' && changes.promoTestSession) controller.restoreSession(changes.promoTestSession.newValue); });
+  const schedule = Adapter?.createScheduler ? Adapter.createScheduler(() => { if (!controller.view().canStop) controller.refresh({ refreshFeed: true }); }, { debounceMs: 500, minIntervalMs: 1200 }) : null;
+  if (schedule) {
+    const observer = new MutationObserver((mutations) => { if (mutations.some((mutation) => Adapter.mutationIsMeaningful(mutation))) schedule('checkout-change'); });
+    observer.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class', 'aria-selected', 'aria-checked', 'data-selected', 'data-sku-id'] });
+  }
+  setInterval(() => { if (location.href !== lastUrl) { lastUrl = location.href; controller.refresh({ refreshFeed: true }); } }, 1000);
+
+  globalThis.CouponHunterCheckoutWidget = { controller, render, sessionMatchesContext };
+})();

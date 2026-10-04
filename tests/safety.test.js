@@ -12,7 +12,7 @@ test('central safeClick allows a visible promo action', (t) => {
 });
 
 test('central safeClick blocks checkout and payment actions', (t) => {
-  for (const label of ['Place order', 'Continue to payment', 'Оплатить', 'Купить', 'Заказать']) {
+  for (const label of ['Оформить заказ', 'Оплатить', 'Купить', 'Place Order', 'Pay Now', 'Buy Now', 'Continue to payment']) {
     const button = new FakeElement({ tag: 'button', text: label }); let blocked = false;
     try { S.safeClick(button, { purpose: 'test' }); } catch (_) { blocked = true; }
     t.equal(blocked, true, label); t.equal(button.clicked || 0, 0, label);

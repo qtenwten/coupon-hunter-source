@@ -29,8 +29,10 @@
   }
 
   function buildPanel() {
-    let panel = document.getElementById('coupon-hunter-panel'); if (panel) return panel;
-    panel = document.createElement('aside'); panel.id = 'coupon-hunter-panel';
+    let panel = document.getElementById('coupon-hunter-panel');
+    if (panel?.getAttribute('data-ch-surface') === 'product') return panel;
+    if (panel) panel.remove();
+    panel = document.createElement('aside'); panel.id = 'coupon-hunter-panel'; panel.setAttribute('data-ch-surface', 'product');
     panel.innerHTML = `
       <div class="ch-head"><div><span class="ch-brand">Coupon Hunter</span> <span class="ch-status" data-ch="status">анализирую…</span></div><button class="ch-toggle" data-ch="toggle" title="Свернуть">−</button></div>
       <div class="ch-body">
@@ -70,6 +72,11 @@
 
   async function parseAndRender(reason = 'mutation', force = false) {
     const product = P.parseProduct(document, location.href); const signature = Adapter.productSignature(product);
+    if (product.pageType !== 'PRODUCT') {
+      if (state.panel?.getAttribute('data-ch-surface') === 'product') state.panel.remove();
+      state.panel = null; state.product = product; state.signature = signature;
+      return product;
+    }
     if (!force && signature === state.signature) return state.product;
     state.signature = signature; state.product = product; render(product); await saveSnapshot(product);
     return product;

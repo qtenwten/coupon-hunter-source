@@ -1,0 +1,145 @@
+const { test } = require('./harness');
+const fs = require('node:fs');
+const { ROOT, sandbox, load } = require('./helpers');
+
+const box = load(sandbox(), 'src/checkout-widget-core.js');
+const Core = box.CouponHunterCheckoutWidgetCore;
+const LIMITS = { DEFAULT_LIVE_ATTEMPTS: 30, DEEP_SCAN_LIVE_ATTEMPTS: 50, HARD_LIVE_ATTEMPT_LIMIT: 50 };
+
+test('checkout widget exposes the required finite UI states', (t) => {
+  t.deep(Object.values(Core.STATES), ['IDLE', 'READY', 'TESTING', 'FOUND_BEST', 'COMPLETE_NO_SAVING', 'STOPPED', 'SAFETY_STOP', 'ERROR']);
+});
+
+test('checkout widget exposes the explicit Russian start, stop and apply-best controls', (t) => {
+  const source = fs.readFileSync(`${ROOT}/src/checkout-widget.js`, 'utf8');
+  t.match(source, />Подобрать лучший промокод</); t.match(source, />Остановить</); t.match(source, />Применить лучший</);
+  t.match(source, /Стандартный — до 30/); t.match(source, /Глубокий — до 50/);
+});
+
+function completeSession(bestCode = null) {
+  const results = bestCode ? [{
+    code: bestCode, verified: true, verificationStatus: 'VALID_APPLIED', saving: 1200,
+    priceBefore: { total: 9990, currency: 'RUB' }, priceAfter: { total: 8790, currency: 'RUB' }, baselineRestored: true
+  }] : [{ code: 'NOPE1', verified: true, verificationStatus: 'INVALID', saving: 0 }];
+  return { status: 'COMPLETE', codes: results.map((row) => row.code), results, bestCode, currency: 'RUB' };
+}
+
+function createHarness(options = {}) {
+  const commands = []; let refreshCalls = 0;
+  const library = options.library || Array.from({ length: 60 }, (_, index) => ({ code: `CODE${String(index).padStart(2, '0')}`, rankScore: 1000 - index }));
+  const context = options.context || { available: true, currency: 'RUB', checkoutFingerprint: { signature: 'cart-1' }, binding: { origin: 'https://aliexpress.ru', pageClass: 'CHECKOUT', pathClass: '/checkout' } };
+  const controller = Core.createController({
+    limits: LIMITS,
+    getContext: async () => context,
+    loadSession: async () => options.session || null,
+    refreshFeed: async () => { refreshCalls += 1; return { ok: true, count: library.length }; },
+    loadLibrary: async () => library,
+    buildQueue: (rows, _checkout, config) => {
+      const limit = Core.modeLimit(config.mode, LIMITS);
+      const eligible = rows.slice().sort((a, b) => b.rankScore - a.rankScore);
+      return { queue: eligible.slice(0, limit), diagnostics: { eligible: eligible.length, limit, queueCoversAllEligible: eligible.length <= limit } };
+    },
+    sendCommand: async (message) => {
+      commands.push(JSON.parse(JSON.stringify(message)));
+      if (message.type === 'CH_TEST_PROMOS') return options.runResult || completeSession('CODE00');
+      if (message.type === 'CH_APPLY_BEST_PROMO') return { status: 'APPLIED' };
+      return { status: 'CANCELLING' };
+    },
+    sessionMatchesContext: options.sessionMatchesContext || (() => true)
+  });
+  return { controller, commands, get refreshCalls() { return refreshCalls; } };
+}
+
+test('checkout widget initializes READY without starting PromoTester', async (t) => {
+  const harness = createHarness(); const view = await harness.controller.initialize();
+  t.equal(view.state, 'READY'); t.equal(harness.commands.length, 0); t.equal(harness.refreshCalls, 1);
+});
+
+test('remote feed refresh never starts automatic promo verification', async (t) => {
+  const harness = createHarness(); await harness.controller.initialize(); await harness.controller.refresh({ refreshFeed: true });
+  t.equal(harness.refreshCalls, 2); t.equal(harness.commands.some((row) => row.type === 'CH_TEST_PROMOS'), false);
+});
+
+test('only explicit start sends CH_TEST_PROMOS', async (t) => {
+  const harness = createHarness(); await harness.controller.initialize();
+  t.equal(harness.commands.length, 0); await harness.controller.start();
+  t.equal(harness.commands.length, 1); t.equal(harness.commands[0].type, 'CH_TEST_PROMOS');
+});
+
+test('Standard mode sends at most 30 candidates in deterministic rank order', async (t) => {
+  const harness = createHarness(); await harness.controller.initialize(); await harness.controller.start();
+  const command = harness.commands[0]; t.equal(command.candidates.length, 30);
+  t.deep(command.candidates.slice(0, 3).map((row) => row.code), ['CODE00', 'CODE01', 'CODE02']); t.equal(command.queueMeta.mode, 'STANDARD');
+});
+
+test('Deep mode sends at most 50 candidates in deterministic rank order', async (t) => {
+  const harness = createHarness(); await harness.controller.initialize(); harness.controller.setMode('DEEP'); await harness.controller.start();
+  const command = harness.commands[0]; t.equal(command.candidates.length, 50);
+  t.deep(command.candidates.slice(-2).map((row) => row.code), ['CODE48', 'CODE49']); t.equal(command.queueMeta.mode, 'DEEP');
+});
+
+test('Stop control maps exactly to CH_CANCEL_PROMO_TEST', async (t) => {
+  const harness = createHarness(); await harness.controller.stop();
+  t.deep(harness.commands, [{ type: 'CH_CANCEL_PROMO_TEST' }]);
+});
+
+test('completed verification never applies BEST automatically', async (t) => {
+  const harness = createHarness(); await harness.controller.initialize(); const view = await harness.controller.start();
+  t.equal(view.state, 'FOUND_BEST'); t.equal(view.canApplyBest, true);
+  t.deep(harness.commands.map((row) => row.type), ['CH_TEST_PROMOS']);
+});
+
+test('temporary applied result is not BEST until baseline restoration is confirmed', (t) => {
+  const session = { status: 'TESTING', codes: ['CODE1'], results: [{ code: 'CODE1', verified: true, verificationStatus: 'VALID_APPLIED', saving: 1200 }] };
+  t.equal(Core.bestResult(session), null);
+  session.results[0].baselineRestored = true; t.equal(Core.bestResult(session).code, 'CODE1');
+});
+
+test('BEST is applied only by explicit applyBest action', async (t) => {
+  const harness = createHarness({ session: completeSession('BEST20') }); await harness.controller.initialize();
+  t.equal(harness.commands.length, 0); const response = await harness.controller.applyBest();
+  t.equal(response.status, 'APPLIED'); t.deep(harness.commands, [{ type: 'CH_APPLY_BEST_PROMO', code: 'BEST20' }]);
+});
+
+test('persisted completed session restores progress, recent results and BEST', async (t) => {
+  const session = completeSession('BEST20'); session.codes = ['BEST20', 'NOPE1']; session.results.push({ code: 'NOPE1', verified: true, verificationStatus: 'INVALID', saving: 0 });
+  const harness = createHarness({ session }); const view = await harness.controller.initialize();
+  t.equal(view.state, 'FOUND_BEST'); t.equal(view.progress, 2); t.equal(view.bestCode, 'BEST20'); t.equal(view.bestSaving, 1200); t.equal(view.recentResults.length, 2);
+});
+
+test('persisted session from a different checkout is not exposed as current BEST', async (t) => {
+  const harness = createHarness({ session: completeSession('OLD20'), sessionMatchesContext: () => false });
+  const view = await harness.controller.initialize();
+  t.equal(view.state, 'READY'); t.equal(view.bestCode, null); t.equal(view.canApplyBest, false);
+});
+
+test('persisted TESTING session restores active progress without a new command', async (t) => {
+  const session = { status: 'TESTING', codes: ['A1', 'A2', 'A3'], current: 'A2', results: [{ code: 'A1', verificationStatus: 'INVALID' }] };
+  const harness = createHarness({ session }); const view = await harness.controller.initialize();
+  t.equal(view.state, 'TESTING'); t.equal(view.progress, 2); t.equal(view.currentCode, 'A2'); t.deep(harness.commands, []);
+});
+
+test('collapsing or reopening UI does not cancel an active persisted session', async (t) => {
+  const session = { status: 'TESTING', codes: ['A1'], current: 'A1', results: [] };
+  const harness = createHarness({ session }); await harness.controller.initialize(); await harness.controller.refresh();
+  t.equal(harness.commands.some((row) => row.type === 'CH_CANCEL_PROMO_TEST'), false);
+});
+
+test('closing popup cannot dispatch cancellation; cancel remains a button-only action', (t) => {
+  const source = fs.readFileSync(`${ROOT}/src/popup-promos.js`, 'utf8');
+  t.ok(!/(?:beforeunload|unload|pagehide)[\s\S]{0,300}CH_CANCEL_PROMO_TEST/.test(source));
+  t.equal((source.match(/CH_CANCEL_PROMO_TEST/g) || []).length, 1);
+  t.match(source, /cancelPromos'\)\.addEventListener\('click'/);
+});
+
+for (const stopReason of ['CAPTCHA', 'RATE_LIMITED']) {
+  test(`${stopReason} session renders the checkout safety-stop state`, async (t) => {
+    const harness = createHarness({ session: { status: 'SAFETY_STOP', stopReason, codes: ['A1'], results: [] } });
+    const view = await harness.controller.initialize(); t.equal(view.state, 'SAFETY_STOP'); t.match(view.message, /остановлена/i); t.equal(view.canStart, true);
+  });
+}
+
+test('widget remains absent when checkout context is not safe enough', async (t) => {
+  const harness = createHarness({ context: { available: false } }); const view = await harness.controller.initialize();
+  t.equal(view.state, 'IDLE'); t.equal(view.available, false); t.equal(view.canStart, false); t.deep(harness.commands, []);
+});
