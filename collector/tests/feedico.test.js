@@ -1,6 +1,8 @@
 const { test } = require('../../tests/harness');
+const { sandbox, load } = require('../../tests/helpers');
 const fixture = require('../fixtures/feedico-catalog.json');
-const { FEEDICO_PAGE_SIZE, FEEDICO_MAX_PAGES_PER_RUN, extractFeedicoTerms, normalizeCoupon, createFeedicoAdapter } = require('../source-adapters/feedico');
+const liveQualityFixture = require('../fixtures/feedico-live-quality.json');
+const { FEEDICO_PAGE_SIZE, FEEDICO_MAX_PAGES_PER_RUN, extractFeedicoTerms, extractFeedicoRegions, extractTitleRegions, extractNewUsersOnly, normalizeCoupon, createFeedicoAdapter } = require('../source-adapters/feedico');
 const { buildFeed } = require('../build-feed');
 
 const response = (payload) => ({ ok: true, status: 200, headers: { get() { return null; } }, async json() { return payload; } });
@@ -13,19 +15,67 @@ test('Feedico fixture preserves title, merchant context, dates and provider', (t
 });
 
 test('Feedico deterministic parser extracts unambiguous percent and minimum spend', (t) => {
-  t.deep(extractFeedicoTerms('20% off orders over $100'), { discountAmount: null, discountPercent: 20, minimumSpend: 100, currency: 'USD' });
-  t.deep(extractFeedicoTerms('Get 15% discount when you spend EUR 80'), { discountAmount: null, discountPercent: 15, minimumSpend: 80, currency: 'EUR' });
+  t.deep(extractFeedicoTerms('20% off orders over $100'), { discountAmount: null, discountPercent: 20, minimumSpend: 100, currency: 'USD', monetaryInterpretation: 'PARSED', monetaryAmbiguityReason: null });
+  t.deep(extractFeedicoTerms('Get 15% discount when you spend EUR 80'), { discountAmount: null, discountPercent: 15, minimumSpend: 80, currency: 'EUR', monetaryInterpretation: 'PARSED', monetaryAmbiguityReason: null });
 });
 
 test('Feedico deterministic parser extracts fixed discount without guessing', (t) => {
-  t.deep(extractFeedicoTerms('$10 off orders over $80'), { discountAmount: 10, discountPercent: null, minimumSpend: 80, currency: 'USD' });
-  t.deep(extractFeedicoTerms('Save €15 on purchases above €100'), { discountAmount: 15, discountPercent: null, minimumSpend: 100, currency: 'EUR' });
+  t.deep(extractFeedicoTerms('$10 off orders over $80'), { discountAmount: 10, discountPercent: null, minimumSpend: 80, currency: 'USD', monetaryInterpretation: 'PARSED', monetaryAmbiguityReason: null });
+  t.deep(extractFeedicoTerms('Save €15 on purchases above €100'), { discountAmount: 15, discountPercent: null, minimumSpend: 100, currency: 'EUR', monetaryInterpretation: 'PARSED', monetaryAmbiguityReason: null });
 });
 
 test('Feedico ambiguous or conflicting title conditions stay null', (t) => {
-  t.deep(extractFeedicoTerms('Up to 30% off selected items'), { discountAmount: null, discountPercent: null, minimumSpend: null, currency: null });
-  t.deep(extractFeedicoTerms('$10 off orders over €80'), { discountAmount: 10, discountPercent: null, minimumSpend: null, currency: 'USD' });
-  t.deep(extractFeedicoTerms('Great seasonal deal'), { discountAmount: null, discountPercent: null, minimumSpend: null, currency: null });
+  t.deep(extractFeedicoTerms('Up to 30% off selected items'), { discountAmount: null, discountPercent: null, minimumSpend: null, currency: null, monetaryInterpretation: 'AMBIGUOUS', monetaryAmbiguityReason: 'NON_DETERMINISTIC_LANGUAGE' });
+  t.deep(extractFeedicoTerms('$10 off orders over €80'), { discountAmount: null, discountPercent: null, minimumSpend: null, currency: null, monetaryInterpretation: 'AMBIGUOUS', monetaryAmbiguityReason: 'CURRENCY_CONFLICT' });
+  t.deep(extractFeedicoTerms('Great seasonal deal'), { discountAmount: null, discountPercent: null, minimumSpend: null, currency: null, monetaryInterpretation: 'UNKNOWN', monetaryAmbiguityReason: null });
+});
+
+test('Feedico live suspicious monetary pairs are ambiguous and cannot rank as savings', async (t) => {
+  const suspicious = liveQualityFixture.coupons.filter((row) => ['AEUKFS20', 'AEUKFS31'].includes(row.code));
+  for (const coupon of suspicious) {
+    const row = normalizeCoupon(coupon);
+    t.equal(row.discountAmount, null, coupon.code); t.equal(row.minimumSpend, null, coupon.code);
+    t.equal(row.monetaryInterpretation, 'AMBIGUOUS', coupon.code); t.equal(row.monetaryAmbiguityReason, 'DISCOUNT_NOT_BELOW_MINIMUM_SPEND', coupon.code);
+  }
+  const adapter = createFeedicoAdapter({ token: 'fixture-token' });
+  adapter.fetch = async () => ({ rows: suspicious.map(normalizeCoupon), rawCount: suspicious.length });
+  const feed = await buildFeed([adapter], { nowMs: Date.parse('2026-10-04T12:00:00Z') });
+  const box = sandbox(); load(box, 'src/promo-constants.js', 'src/storage.js', 'src/promo-intelligence.js');
+  for (const promo of feed.promos) {
+    t.equal(promo.discountType, 'UNKNOWN', promo.code); t.equal(promo.monetaryInterpretation, 'AMBIGUOUS', promo.code);
+    t.deep(box.CouponHunterPromoIntelligence.estimateSaving(box.CouponHunterStorage.candidate(promo), { currency: 'GBP', subtotal: 1000 }), { estimatedSaving: null, theoreticalMaxSaving: null }, promo.code);
+  }
+});
+
+test('Feedico regions prefer structured country data and use contextual title fallback', (t) => {
+  t.deep(extractFeedicoRegions({ countryCode: 'US', title: 'Party Ready Sale UK codes' }), ['US']);
+  t.deep(extractFeedicoRegions({ location: { country: 'United Kingdom' }, title: 'US Choice Day Sale' }), ['GB']);
+  t.deep(extractFeedicoRegions({ location: 'Europe', title: 'Party Ready Sale UK codes' }), []);
+  const byCode = Object.fromEntries(liveQualityFixture.coupons.map((row) => [row.code, normalizeCoupon(row).regions]));
+  t.deep(byCode.AEUKFS12, ['GB']); t.deep(byCode.AUAU02, ['AU']); t.deep(byCode.CEELD02, ['CZ', 'HU']); t.deep(byCode.CLAF10, ['CL']);
+  t.deep(extractTitleRegions('Save with us today'), []); t.deep(extractTitleRegions('IT is a great deal'), []);
+});
+
+test('Feedico audience restrictions are inferred only from unambiguous wording', (t) => {
+  const live = liveQualityFixture.coupons.find((row) => row.code === '0003NEWUSOFF');
+  t.equal(normalizeCoupon(live).newUsersOnly, true); t.deep(normalizeCoupon(live).regions, ['US']);
+  t.equal(extractNewUsersOnly('New Users Only: save $5'), true);
+  t.equal(extractNewUsersOnly('New customer discount'), true);
+  t.equal(extractNewUsersOnly('Offer for existing and new users'), null);
+  t.equal(extractNewUsersOnly('Seasonal customer discount'), null);
+});
+
+test('Feedico region and audience metadata survive final feed resolution', async (t) => {
+  const selected = liveQualityFixture.coupons.filter((row) => ['AEUKFS12', '0003NEWUSOFF'].includes(row.code));
+  const adapter = createFeedicoAdapter({ token: 'fixture-token' });
+  adapter.fetch = async () => ({ rows: selected.map(normalizeCoupon), rawCount: selected.length });
+  const feed = await buildFeed([adapter], { nowMs: Date.parse('2026-10-04T12:00:00Z') });
+  const uk = feed.promos.find((row) => row.code === 'AEUKFS12'); const usNewUser = feed.promos.find((row) => row.code === '0003NEWUSOFF');
+  t.deep(uk.regions, ['GB']); t.deep(uk.sourceClaims[0].claimedRegions, ['GB']);
+  t.deep(usNewUser.regions, ['US']); t.equal(usNewUser.newUsersOnly, true);
+  const box = sandbox(); load(box, 'src/promo-constants.js', 'src/storage.js', 'src/promo-intelligence.js');
+  const assessed = box.CouponHunterPromoIntelligence.assessCandidate(box.CouponHunterStorage.candidate(uk), { region: 'RU', regionConfidence: 0.9 }, { nowMs: Date.parse('2026-10-04T12:00:00Z') });
+  t.equal(assessed.eligibility, 'INELIGIBLE'); t.ok(assessed.reasons.includes('REGION_MISMATCH'));
 });
 
 test('Feedico adapter filters non-AliExpress fixture rows and reports diagnostics', async (t) => {

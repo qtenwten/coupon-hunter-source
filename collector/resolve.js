@@ -1,6 +1,6 @@
 'use strict';
 
-const CLAIM_FIELDS = ['claimedDiscountAmount', 'claimedDiscountPercent', 'claimedMaximumDiscount', 'claimedMinimumSpend', 'claimedMinimumSpendBasis', 'claimedCurrency', 'claimedRegions', 'claimedStartsAt', 'claimedExpiresAt', 'campaign'];
+const CLAIM_FIELDS = ['claimedDiscountAmount', 'claimedDiscountPercent', 'claimedMaximumDiscount', 'claimedMinimumSpend', 'claimedMinimumSpendBasis', 'claimedCurrency', 'claimedRegions', 'monetaryInterpretation', 'monetaryAmbiguityReason', 'claimedStartsAt', 'claimedExpiresAt', 'campaign'];
 const valueKey = (value) => typeof value === 'object' ? JSON.stringify(value) : String(value);
 const claimKey = (claim) => `${claim.sourceGroup}\u0000${claim.sourceId}`;
 const snapshot = (claim) => Object.fromEntries(CLAIM_FIELDS.map((field) => [field, claim[field]]));
@@ -45,11 +45,17 @@ function resolveCode(rows) {
   }
   const amount = best(active, 'claimedDiscountAmount'); const percent = best(active, 'claimedDiscountPercent'); const maximum = best(active, 'claimedMaximumDiscount');
   const currencies = [...new Set(rows.flatMap((row) => row.currencies))].sort(); const regions = [...new Set(rows.flatMap((row) => row.regions))].sort();
+  const hasResolvedMonetaryTerms = amount !== null || percent !== null || best(active, 'claimedMinimumSpend') !== null;
+  const ambiguityReasons = [...new Set(active.filter((claim) => claim.monetaryInterpretation === 'AMBIGUOUS').map((claim) => claim.monetaryAmbiguityReason).filter(Boolean))].sort();
+  const monetaryInterpretation = hasResolvedMonetaryTerms ? 'PARSED' : ambiguityReasons.length ? 'AMBIGUOUS' : 'UNKNOWN';
+  const audienceValues = rows.map((row) => row.newUsersOnly).filter((value) => typeof value === 'boolean');
+  const newUsersOnly = audienceValues.includes(true) ? true : audienceValues.length && audienceValues.every((value) => value === false) ? false : null;
   const observations = claims.map((claim) => claim.firstObservedAt || claim.observedAt).sort(); const activeObservations = active.map((claim) => claim.lastObservedAt || claim.observedAt).sort();
   return { schemaVersion: 2, code, title: rows.map((row) => row.title).filter(Boolean).sort()[0] || null, lifecycleStatus: active.length ? 'ACTIVE' : 'SUSPENDED', type: rows.some((row) => row.type === 'SELLER_COUPON') ? 'SELLER_COUPON' : 'PLATFORM_PROMO_CODE',
     discountType: amount !== null ? 'FIXED' : percent !== null ? 'PERCENT' : 'UNKNOWN', discountAmount: amount, discountPercent: percent, maximumDiscount: maximum,
     minimumSpend: best(active, 'claimedMinimumSpend'), minimumSpendBasis: best(active, 'claimedMinimumSpendBasis') || 'UNKNOWN', discountCurrency: best(active, 'claimedCurrency'), currencies, regions,
-    newUsersOnly: rows.some((row) => row.newUsersOnly), campaign: rows.map((row) => row.campaign).filter(Boolean).sort()[0] || null,
+    monetaryInterpretation, monetaryAmbiguityReasons: ambiguityReasons,
+    newUsersOnly, campaign: rows.map((row) => row.campaign).filter(Boolean).sort()[0] || null,
     startsAt: best(active, 'claimedStartsAt'), expiresAt: best(active, 'claimedExpiresAt'), itemIds: [...new Set(rows.flatMap((row) => row.itemIds))].sort(), sellerIds: [...new Set(rows.flatMap((row) => row.sellerIds))].sort(),
     providerMetadata: rows.map((row) => ({ sourceId: row.sourceClaim.sourceId, recordId: row.providerRecordId, store: row.providerStore, brandName: row.providerBrandName, firmName: row.providerFirmName, source: row.providerSource, rating: row.providerRating, merchantWebsiteUrl: row.providerMerchantWebsiteUrl })).filter((row) => row.recordId || row.store || row.brandName || row.firmName || row.source || row.rating !== null || row.merchantWebsiteUrl).slice(0, 12),
     sourceClaims: claims, conflicts, fieldConfidence, independentSourceGroups: groupClaims(active).size, firstSeenAt: observations[0], lastSeenAt: activeObservations.at(-1) || observations.at(-1) };

@@ -19,6 +19,8 @@ function safeUrl(value) {
 function normalizeClaim(raw, adapter, observedAt) {
   const code = normalizeCode(raw?.code); if (!code) return null;
   const category = CATEGORIES.has(adapter.category) ? adapter.category : 'UNKNOWN';
+  const monetaryInterpretation = ['PARSED', 'AMBIGUOUS', 'UNKNOWN'].includes(raw.monetaryInterpretation) ? raw.monetaryInterpretation : 'UNKNOWN';
+  const monetaryAmbiguityReason = monetaryInterpretation === 'AMBIGUOUS' && raw.monetaryAmbiguityReason ? String(raw.monetaryAmbiguityReason).slice(0, 120) : null;
   return {
     code, lifecycleStatus: String(raw.lifecycleStatus || raw.status || 'ACTIVE').toUpperCase() === 'SUSPENDED' ? 'SUSPENDED' : 'ACTIVE',
     type: raw.type === 'SELLER_COUPON' ? 'SELLER_COUPON' : 'PLATFORM_PROMO_CODE',
@@ -34,7 +36,8 @@ function normalizeClaim(raw, adapter, observedAt) {
     discountAmount: finite(raw.discountAmount), discountPercent: finite(raw.discountPercent), maximumDiscount: finite(raw.maximumDiscount),
     minimumSpend: finite(raw.minimumSpend), minimumSpendBasis: BASES.has(raw.minimumSpendBasis) ? raw.minimumSpendBasis : 'UNKNOWN',
     currencies: list(raw.currencies || raw.currency, 20).map((value) => value.toUpperCase()), regions: list(raw.regions || raw.region, 50).map((value) => value.toUpperCase()),
-    newUsersOnly: raw.newUsersOnly === true, campaign: raw.campaign ? String(raw.campaign).slice(0, 200) : null,
+    newUsersOnly: typeof raw.newUsersOnly === 'boolean' ? raw.newUsersOnly : null, monetaryInterpretation, monetaryAmbiguityReason,
+    campaign: raw.campaign ? String(raw.campaign).slice(0, 200) : null,
     startsAt: iso(raw.startsAt || raw.startAt), expiresAt: iso(raw.expiresAt), itemIds: list(raw.itemIds || raw.itemId), sellerIds: list(raw.sellerIds || raw.sellerId),
     sourceClaim: {
       sourceId: adapter.id, sourceGroup: adapter.sourceGroup, category, origin: 'REMOTE_FEED',
@@ -45,6 +48,7 @@ function normalizeClaim(raw, adapter, observedAt) {
       claimedMinimumSpend: finite(raw.minimumSpend), claimedMinimumSpendBasis: BASES.has(raw.minimumSpendBasis) ? raw.minimumSpendBasis : 'UNKNOWN',
       claimedCurrency: raw.discountCurrency || raw.currency || raw.currencies?.[0] || null,
       claimedRegions: list(raw.regions || raw.region, 50).map((value) => value.toUpperCase()),
+      monetaryInterpretation, monetaryAmbiguityReason,
       claimedStartsAt: iso(raw.startsAt || raw.startAt), claimedExpiresAt: iso(raw.expiresAt), campaign: raw.campaign || null
     }
   };

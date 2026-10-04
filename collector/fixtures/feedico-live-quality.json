@@ -1,0 +1,54 @@
+{
+  "source": "sanitized-live-artifact-derived",
+  "coupons": [
+    {
+      "id": "live-money-1",
+      "brandName": "AliExpress",
+      "code": "AEUKFS20",
+      "title": "£170 off when you spend £20",
+      "merchantWebsiteUrl": "https://www.aliexpress.com"
+    },
+    {
+      "id": "live-money-2",
+      "brandName": "AliExpress",
+      "code": "AEUKFS31",
+      "title": "£260 off when you spend £31",
+      "merchantWebsiteUrl": "https://www.aliexpress.com"
+    },
+    {
+      "id": "live-region-uk",
+      "brandName": "AliExpress",
+      "code": "AEUKFS12",
+      "title": "Party Ready Sale UK codes: AEUKFS12 : £95-£12",
+      "merchantWebsiteUrl": "https://www.aliexpress.com"
+    },
+    {
+      "id": "live-region-au",
+      "brandName": "AliExpress",
+      "code": "AUAU02",
+      "title": "Party Ready Sale AU codes: AUAU02 : A$15-A$2",
+      "merchantWebsiteUrl": "https://www.aliexpress.com"
+    },
+    {
+      "id": "live-region-cee",
+      "brandName": "AliExpress",
+      "code": "CEELD02",
+      "title": "CZ, HU Local day codes: CEELD02 :€18-€2",
+      "merchantWebsiteUrl": "https://www.aliexpress.com"
+    },
+    {
+      "id": "live-region-cl",
+      "brandName": "AliExpress",
+      "code": "CLAF10",
+      "title": "Party Ready Sale CL codes: CLAF10 $69-10",
+      "merchantWebsiteUrl": "https://www.aliexpress.com"
+    },
+    {
+      "id": "live-audience-us",
+      "brandName": "AliExpress",
+      "code": "0003NEWUSOFF",
+      "title": "US New User Code: Get $3 off on orders over $10 – 0003NEWUSOFF",
+      "merchantWebsiteUrl": "https://www.aliexpress.com"
+    }
+  ]
+}

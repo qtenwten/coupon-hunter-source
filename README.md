@@ -1,8 +1,8 @@
-# Coupon Hunter v3.1.1
+# Coupon Hunter v3.1.2
 
 Локальное расширение Manifest V3 для Chrome desktop и Яндекс Браузера на Chromium. Оно анализирует страницы AliExpress, хранит данные в `chrome.storage.local` и проверяет только явно найденные или введённые промокоды. Случайные коды не генерируются, brute force не выполняется.
 
-## Что добавлено в v3.1.1
+## Что добавлено в v3.1.2
 
 - `sourceClaims` compacted по `promo code + sourceGroup + sourceId`: сохраняются последнее наблюдение, first/last timestamps, observation count и максимум 8 material changes; до 32 claims на код.
 - Trust и corroboration считаются по независимым `sourceGroup`, повторные polls одного источника не повышают уверенность.
@@ -13,6 +13,9 @@
 - Storage diagnostics показывает total/library/feed/history bytes; soft budget сначала сокращает remote diagnostics/history и никогда не удаляет USER code.
 - Server-side Collector получил CouponAPI incremental adapter, Feedico catalog adapter и отдельный AliGate seller-coupon adapter. SimplyCodes и официальный buyer-promo AliExpress source остаются честно disabled до подтверждённого доступа/API.
 - Feedico adapter сохраняет title/brand/firm/dates/merchant/provider metadata, консервативно извлекает только однозначные условия и имеет hard cap 5 × 100 строк за запуск.
+- Невозможные fixed-discount/minimum-spend пары Feedico помечаются `AMBIGUOUS`; их числа не попадают в theoretical saving и ranking.
+- Регион Feedico берётся из structured country/location; контекстные country markers в title используются только как fallback.
+- Однозначные `New User`/`New Users Only`/`new customer` restrictions сохраняются как `newUsersOnly=true`; неоднозначность остаётся unknown.
 - Ручной GitHub Action `.github/workflows/feedico-smoke.yml` выполняет tests и Stage A Feedico smoke без публикации feed, cron, Pages или signing key.
 - Applicability Engine локально фильтрует только доказанные несовместимости по сроку, валюте, региону, товарам, продавцам и известному basis минимальной суммы.
 - Deterministic Queue Builder ранжирует ожидаемую выгоду, theoretical maximum, применимость, доверие, свежесть, независимые source groups и локальную историю.

@@ -1,4 +1,4 @@
-# Coupon Hunter collector 3.1.1
+# Coupon Hunter collector 3.1.2
 
 Collector — отдельный Node.js data pipeline. Он не входит в Chrome extension и не получает корзину, SKU, total, аккаунт или browser history пользователя.
 
