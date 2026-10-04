@@ -1,0 +1,36 @@
+{
+  "url": "https://aliexpress.ru/checkout",
+  "total": "Итого 8 923 ₽",
+  "recentProduct": {
+    "itemId": "1005009780072336",
+    "skuId": "12000050136402711",
+    "title": "Flydigi APEX 5 Elite геймпад",
+    "variant": "With charge dock",
+    "price": 8923,
+    "currency": "RUB"
+  },
+  "visibleLine": {
+    "title": "Flydigi APEX 5 Elite геймпад",
+    "variant": "With charge dock",
+    "price": "8 923 ₽",
+    "quantity": "1"
+  },
+  "structuredState": {
+    "checkoutItems": [
+      {
+        "itemId": "1005009780072336",
+        "skuId": "12000050136402711",
+        "quantity": 1
+      },
+      {
+        "itemId": "1005001111111111",
+        "skuId": "12000050136402711",
+        "quantity": 1
+      }
+    ]
+  },
+  "expected": {
+    "visibleLineCount": 1,
+    "fingerprint": "STRONG"
+  }
+}

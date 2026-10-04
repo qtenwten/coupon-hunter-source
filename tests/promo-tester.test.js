@@ -64,6 +64,42 @@ function correlationCheckoutDocument(data, { line = data.visibleLine, structured
   return { root, title, variant, quantity, price, script, querySelectorAll };
 }
 
+function hashAnchorCheckoutDocument(data, { includePrice = true, huge = false, duplicate = false } = {}) {
+  const heading = new FakeElement({ tag: 'h1', text: 'Оформление заказа' });
+  const promo = new FakeElement({ tag: 'button', text: 'Ввести промокод' });
+  const input = new FakeElement({ tag: 'input', attrs: { 'aria-label': 'Promo code' } });
+  const order = new FakeElement({ tag: 'button', text: 'Оформить заказ' });
+  const total = new FakeElement({ text: data.total, attrs: { 'data-pl': 'order-total' } });
+  const script = new FakeElement({ tag: 'script', text: JSON.stringify(data.structuredState), attrs: { type: 'application/json' } });
+  const compact = []; const roots = [];
+  const makeRoot = () => {
+    const title = new FakeElement({ tag: 'span', text: data.visibleLine.title });
+    const variant = new FakeElement({ tag: 'span', text: data.visibleLine.variant });
+    const price = includePrice ? new FakeElement({ tag: 'strong', text: data.visibleLine.price }) : null;
+    const minus = new FakeElement({ tag: 'button', text: '−', attrs: { 'aria-label': 'Уменьшить' } });
+    const quantity = new FakeElement({ tag: 'span', text: data.visibleLine.quantity });
+    const plus = new FakeElement({ tag: 'button', text: '+', attrs: { 'aria-label': 'Увеличить' } });
+    const quantityGroup = new FakeElement({ tag: 'div', text: `− ${data.visibleLine.quantity} +`, children: [minus, quantity, plus] });
+    const image = new FakeElement({ tag: 'img', attrs: { alt: 'Product' } });
+    const rootText = huge ? `${data.visibleLine.title} ${data.visibleLine.variant} ${data.visibleLine.price} ${'x'.repeat(1300)}` : `${data.visibleLine.title} ${data.visibleLine.variant} ${includePrice ? data.visibleLine.price : ''} − ${data.visibleLine.quantity} +`;
+    const root = new FakeElement({ tag: 'section', text: rootText, children: [title, variant, ...(price ? [price] : []), quantityGroup, image], rect: { width: huge ? 1900 : 620, height: huge ? 900 : 220 } });
+    root.querySelector = (selector) => /img|picture|role="img"/.test(selector) ? image : null;
+    const page = new FakeElement({ tag: 'main', text: `Получатель hidden ${rootText}`, children: [root], rect: { width: 1600, height: 1200 } });
+    compact.push(title, variant, ...(price ? [price] : []), minus, quantity, plus); roots.push({ root, page, title, variant, price, minus, quantity, plus });
+  };
+  makeRoot(); if (duplicate) makeRoot();
+  const querySelectorAll = (selector) => {
+    if (selector === 'h1,h2,[role="heading"],[aria-level]') return [heading];
+    if (selector === 'button,[role="button"],summary' || selector === 'button,[role="button"],input[type="submit"]') return [promo, order];
+    if (selector === 'input') return [input];
+    if (selector.startsWith('[data-pl*="total"')) return [total];
+    if (selector === 'div,span,p,a,strong,b,label') return compact;
+    if (selector.startsWith('script[type="application/json"')) return [script];
+    return [];
+  };
+  return { roots, compact, promo, order, script, querySelectorAll };
+}
+
 function recentContext(data, overrides = {}) {
   const recent = data.recentProduct;
   return {
@@ -207,9 +243,11 @@ test('checkout item identity never uses seller display text as sellerId', (t) =>
 test('checkout context is available with reliable cart identity while promo input is collapsed', (t) => {
   const total = new FakeElement({ text: 'Итого к оплате 9 990 ₽', attrs: { 'data-pl': 'order-total' } });
   const item = new FakeElement({ attrs: { 'data-item-id': '12345', 'data-quantity': '1' } });
+  const reveal = new FakeElement({ tag: 'button', text: 'Ввести промокод' });
   doc.querySelectorAll = (selector) => {
     if (selector.startsWith('[data-pl*="total"')) return [total];
     if (selector.startsWith('[data-item-id]')) return [item];
+    if (selector === 'button,[role="button"],summary' || selector === 'button,[role="button"],input[type="submit"]') return [reveal];
     return [];
   };
   const context = T.checkoutContext();
@@ -323,6 +361,43 @@ test('recent product plus four visible line signals resolves one competing check
   T.setRecentProductContext(null); doc.querySelectorAll = () => []; box.location.href = previousUrl;
 });
 
+test('live checkout hash-anchor fallback finds a classless purchase line and resolves identity', (t) => {
+  const data = fixture('aliexpress-checkout-hash-anchor-live.json'); const page = hashAnchorCheckoutDocument(data); const previousUrl = box.location.href;
+  box.location.href = data.url; T.setRecentProductContext(recentContext(data)); doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext(); const structured = context.diagnostics.structured;
+  t.equal(structured.visibleLineCount, data.expected.visibleLineCount); t.equal(structured.visibleLineDetectionStrategy, 'RECENT_HASH_ANCHOR');
+  for (const signal of ['TITLE_HASH', 'VARIANT_HASH', 'LINE_PRICE', 'QUANTITY_CONTROL']) t.ok(structured.visibleLineAnchorSignals.includes(signal), signal);
+  t.equal(structured.visibleLinesWithTitle, 1); t.equal(structured.visibleLinesWithVariant, 1); t.equal(structured.visibleLinesWithPrice, 1); t.equal(structured.visibleLinesWithQuantity, 1);
+  t.equal(context.checkoutFingerprint.items.length, 1); t.equal(context.fingerprintQuality, data.expected.fingerprint); t.equal(context.available, true); t.equal(context.promoTestingSurface, true);
+  t.equal(structured.recentProductExactItemMatchCount, 1); t.equal(structured.recentProductExactSkuMatchCount, 2); t.equal(structured.structuredMatchedLineCount, 1);
+  T.setRecentProductContext(null); doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('hash anchors without an actual visible matching line price remain WEAK', (t) => {
+  const data = fixture('aliexpress-checkout-hash-anchor-live.json'); const page = hashAnchorCheckoutDocument(data, { includePrice: false }); const previousUrl = box.location.href;
+  box.location.href = data.url; T.setRecentProductContext(recentContext(data)); doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext();
+  t.equal(context.diagnostics.structured.visibleLineCount, 0); t.equal(context.checkoutFingerprint.items.length, 0); t.equal(context.fingerprintQuality, 'WEAK');
+  t.equal(context.diagnostics.structured.visibleLineDetectionStrategy, 'NONE');
+  T.setRecentProductContext(null); doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('huge page-level hash-anchor container is rejected', (t) => {
+  const data = fixture('aliexpress-checkout-hash-anchor-live.json'); const page = hashAnchorCheckoutDocument(data, { huge: true }); const previousUrl = box.location.href;
+  box.location.href = data.url; T.setRecentProductContext(recentContext(data)); doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext();
+  t.equal(context.diagnostics.structured.visibleLineCount, 0); t.equal(context.fingerprintQuality, 'WEAK'); t.equal(context.available, false);
+  T.setRecentProductContext(null); doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('two possible hash-anchor purchase roots remain ambiguous and WEAK', (t) => {
+  const data = fixture('aliexpress-checkout-hash-anchor-live.json'); const page = hashAnchorCheckoutDocument(data, { duplicate: true }); const previousUrl = box.location.href;
+  box.location.href = data.url; T.setRecentProductContext(recentContext(data)); doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext();
+  t.equal(context.diagnostics.structured.visibleLineCount, 0); t.equal(context.checkoutFingerprint.items.length, 0); t.equal(context.fingerprintQuality, 'WEAK');
+  T.setRecentProductContext(null); doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
 test('stale recent product context cannot resolve competing checkout items', (t) => {
   const data = fixture('aliexpress-checkout-correlation-live.json'); const page = correlationCheckoutDocument(data); const previousUrl = box.location.href;
   box.location.href = data.url; T.setRecentProductContext(recentContext(data, { timestamp: Date.now() - 31 * 60 * 1000 })); doc.querySelectorAll = page.querySelectorAll;
@@ -415,6 +490,29 @@ test('non-checkout page with only a promo control is not a checkout surface', (t
   doc.querySelectorAll = (selector) => selector === 'button,[role="button"],summary' || selector === 'button,[role="button"],input[type="submit"]' ? [promo] : [];
   const context = T.checkoutContext();
   t.equal(context.pageType, 'PRODUCT'); t.equal(context.checkoutSurfaceDetected, false); t.equal(context.available, false);
+  doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('cart seller coupon is not a platform promo surface and is never clicked', async (t) => {
+  const sellerCoupon = new FakeElement({ tag: 'button', text: 'Применить купон! -86 ₽' }); const previousUrl = box.location.href;
+  box.location.href = 'https://aliexpress.ru/p/shoppingcart/index.html';
+  doc.querySelectorAll = (selector) => selector === 'button,[role="button"],summary' || selector === 'button,[role="button"],input[type="submit"]' ? [sellerCoupon] : [];
+  const context = T.checkoutContext();
+  t.equal(context.pageType, 'CART'); t.equal(context.promoTestingSurface, false); t.equal(context.checkoutWidgetVisible, false); t.equal(context.available, false);
+  t.equal(context.diagnostics.promoTestingSurface, false); t.equal(context.diagnostics.platformPromoInputFound, false); t.equal(context.diagnostics.platformPromoRevealFound, false);
+  t.equal(context.checkoutFingerprint.items.length, 0); t.equal(T.findPlatformPromoRevealControl(), null);
+  t.equal(await T.ensurePromoInput(), null); t.equal(sellerCoupon.clicked || 0, 0);
+  const response = await T.executeCommand({ type: 'CH_TEST_PROMOS', candidates: ['CODE1'] });
+  t.equal(response.status, 'UNAVAILABLE'); t.equal(sellerCoupon.clicked || 0, 0);
+  doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('strict checkout promo reveal recognizes enter promo code semantics', (t) => {
+  const reveal = new FakeElement({ tag: 'button', text: 'Ввести промокод' }); const previousUrl = box.location.href;
+  box.location.href = 'https://aliexpress.ru/checkout';
+  doc.querySelectorAll = (selector) => selector === 'button,[role="button"],summary' || selector === 'button,[role="button"],input[type="submit"]' ? [reveal] : [];
+  t.equal(T.findPlatformPromoRevealControl(), reveal); t.equal(reveal.clicked || 0, 0);
+  const context = T.checkoutContext(); t.equal(context.promoTestingSurface, true); t.equal(context.diagnostics.platformPromoRevealFound, true);
   doc.querySelectorAll = () => []; box.location.href = previousUrl;
 });
 

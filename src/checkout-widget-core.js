@@ -86,13 +86,21 @@
       model.plan = dependencies.buildQueue(model.library, model.context.intelligence || model.context, { mode: model.mode });
     }
 
+    function widgetVisible() {
+      const session = sessionForCurrentContext();
+      const surfaceVisible = model.context?.checkoutWidgetVisible !== undefined
+        ? model.context.checkoutWidgetVisible
+        : !!(model.context?.checkoutSurfaceCandidate ?? model.context?.checkoutSurfaceDetected);
+      return !!surfaceVisible || ACTIVE_SESSION.has(session?.status);
+    }
+
     function view() {
       const session = sessionForCurrentContext(); const best = bestResult(session); const state = stateFor(model.context, session, model.error);
       const results = Array.isArray(session?.results) ? session.results : []; const total = session?.codes?.length || model.plan?.queue?.length || 0;
       const progress = Math.min(total, results.length + (session?.current ? 1 : 0));
       const recent = results.slice(-4); if (best && !recent.includes(best)) recent.unshift(best);
       return {
-        state, mode: model.mode, visible: !!(model.context?.checkoutSurfaceCandidate ?? model.context?.checkoutSurfaceDetected), available: !!model.context?.available,
+        state, mode: model.mode, visible: widgetVisible(), available: !!model.context?.available,
         foundCount: model.library.length, applicableCount: model.plan ? model.plan.diagnostics?.eligible ?? 0 : null,
         queueCount: total, progress, currentCode: session?.current || null,
         bestCode: best?.code || null, bestSaving: finite(Number(best?.saving)), currency: best?.priceAfter?.currency || best?.priceBefore?.currency || session?.currency || model.context?.currency || null,
@@ -110,7 +118,7 @@
       try {
         model.context = await dependencies.getContext();
         model.session = await dependencies.loadSession?.() || null;
-        const visible = !!(model.context?.checkoutSurfaceCandidate ?? model.context?.checkoutSurfaceDetected);
+        const visible = widgetVisible();
         if (!visible) { model.library = []; model.plan = null; notify(); return view(); }
         if (refreshFeed && typeof dependencies.refreshFeed === 'function') {
           try { model.feedStatus = await dependencies.refreshFeed(false); } catch (error) { model.feedStatus = { ok: false, error: error?.message || String(error) }; }

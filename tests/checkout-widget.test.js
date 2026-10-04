@@ -184,6 +184,20 @@ test('non-checkout AliExpress page does not show checkout widget', async (t) => 
   t.equal(view.state, 'IDLE'); t.equal(view.visible, false); t.equal(view.available, false); t.equal(view.canStart, false); t.deep(harness.commands, []);
 });
 
+test('ordinary CART without platform promo surface hides checkout widget and cannot start', async (t) => {
+  const harness = createHarness({ context: { pageType: 'CART', checkoutSurfaceDetected: true, checkoutSurfaceCandidate: true, checkoutWidgetVisible: false, promoTestingSurface: false, available: false } });
+  const view = await harness.controller.initialize(); await harness.controller.start();
+  t.equal(view.visible, false); t.equal(view.available, false); t.equal(view.canStart, false); t.equal(view.foundCount, 0);
+  t.equal(harness.refreshCalls, 0); t.equal(harness.commands.some((row) => row.type === 'CH_TEST_PROMOS'), false);
+});
+
+test('an already active matching promo session remains visible for safe recovery', async (t) => {
+  const session = { status: 'TESTING', codes: ['A1'], current: 'A1', results: [] };
+  const harness = createHarness({ context: { pageType: 'CHECKOUT', checkoutSurfaceDetected: true, checkoutWidgetVisible: false, available: false }, session });
+  const view = await harness.controller.initialize();
+  t.equal(view.visible, true); t.equal(view.canStart, false); t.equal(view.canStop, true);
+});
+
 test('WEAK checkout fingerprint never sends CH_TEST_PROMOS', async (t) => {
   const harness = createHarness({ context: { checkoutSurfaceDetected: true, available: false, fingerprintQuality: 'WEAK' } });
   await harness.controller.initialize(); await harness.controller.start();

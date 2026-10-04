@@ -1,6 +1,15 @@
-# Coupon Hunter v3.3.3
+# Coupon Hunter v3.3.4
 
 Локальное расширение Manifest V3 для Chrome desktop и Яндекс Браузера на Chromium. Оно анализирует страницы AliExpress, хранит данные в `chrome.storage.local` и проверяет только явно найденные или введённые промокоды. Случайные коды не генерируются, brute force не выполняется.
+
+## Что исправлено в v3.3.4
+
+- Checkout получил консервативный fallback `RECENT_HASH_ANCHOR`: hashes недавнего товара используются только для поиска видимой compact purchase line, где цена и валюта должны реально присутствовать в DOM.
+- Для classless checkout line безопасно определяется quantity из явного атрибута/input, текста `1 шт.` либо компактной группы minus–integer–plus; случайные числа товара не считаются количеством.
+- Структурный candidate выбирается только при единственном победителе correlation. Неоднозначная, огромная, summary/delivery/sensitive или не имеющая видимой line price область сохраняет fingerprint `WEAK`.
+- Platform promo input/reveal отделён от seller/store/item coupon controls. Кнопка вроде «Применить купон! −86 ₽» не раскрывается и не считается поверхностью проверки промокодов.
+- Полноразмерный checkout widget скрыт на обычной странице CART; CART не строит verifier fingerprint и прямой `CH_TEST_PROMOS` там возвращает безопасный `UNAVAILABLE`.
+- Diagnostics добавляют только безопасные strategy/signals и флаги promo surface, без raw title, variant, itemId или SKU.
 
 ## Что исправлено в v3.3.3
 
@@ -120,7 +129,7 @@ Production feed URL зашит в extension: `https://qsen.ru/coupon-hunter-sour
 ## Проверка промокодов
 
 1. Добавьте свои коды в popup при необходимости. Найденные на ранее открытых страницах коды уже находятся в локальном registry.
-2. Откройте корзину или checkout и проверьте состав заказа, SKU, количество, адрес, доставку и способ оплаты самостоятельно.
+2. Перейдите к checkout и проверьте состав заказа, SKU, количество, адрес, доставку и способ оплаты самостоятельно. На обычной странице корзины verifier и его полноразмерный widget не запускаются.
 3. В floating widget выберите Standard (до 30 attempts) или Deep (до 50) и нажмите «Подобрать лучший промокод». Запуск никогда не происходит автоматически.
 4. Verifier фиксирует baseline, применяет один код, ждёт перерасчёта, классифицирует ответ и измеряет `baselineTotal - resultingTotal`.
 5. Если код был применён, verifier удаляет его и подтверждает возврат к baseline до следующей попытки.

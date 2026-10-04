@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__COUPON_HUNTER_PROMO_TESTER_V333__) return;
-  window.__COUPON_HUNTER_PROMO_TESTER_V333__ = true;
+  if (window.__COUPON_HUNTER_PROMO_TESTER_V334__) return;
+  window.__COUPON_HUNTER_PROMO_TESTER_V334__ = true;
 
   const P = globalThis.CouponHunterParser;
   const C = globalThis.CouponHunterCheckoutCore;
@@ -16,6 +16,8 @@
   const PROMO_WORD = /(?:promo(?:\s*code)?|coupon|voucher|discount(?:\s*code)?|code|промокод|купон|скидк|код\s*скидки)/i;
   const NEGATIVE_APPLY = /(?:coins?|points?|balance|rewards?|bonus|gift\s*card|credit|loan|address|job|application|монет|балл|баланс|бонус|наград|подарочн(?:ая|ой)\s*карт|сертификат|кредит|адрес|заявк)/i;
   const APPLIED_TEXT = /(?:promo(?:\s*code)?|coupon|voucher|discount|промокод|купон|скидк).{0,40}(?:applied|active|selected|примен[её]н|активирован|выбран)|(?:applied|примен[её]н[ао]?).{0,40}(?:promo|coupon|voucher|discount|промокод|купон|скидк)/i;
+  const PLATFORM_PROMO_CONTROL = /(?:promo(?:tion)?\s*code|voucher\s*code|discount\s*code|промокод|код\s*скидки)/i;
+  const GENERIC_COUPON_ACTION = /(?:apply|collect|get|use|применить|получить|использовать).{0,40}(?:coupon|купон)|(?:seller|store|item|продавц|магазин|товар).{0,40}(?:coupon|купон)/i;
   let running = false;
   let cancelRequested = false;
   let summaryRootCache = null;
@@ -78,16 +80,15 @@
   function inputScore(input) {
     const signature = normalize([input.name, input.id, input.placeholder, input.autocomplete, input.getAttribute?.('aria-label'), input.getAttribute?.('data-testid')].filter(Boolean).join(' ')).toLowerCase();
     let score = 0;
-    if (/promo|promocode|promotion/.test(signature)) score += 110;
-    if (/coupon|voucher|купон/.test(signature)) score += 95;
-    if (/промокод|код скидки|discount code/.test(signature)) score += 120;
+    if (PLATFORM_PROMO_CONTROL.test(signature) || /promocode/.test(signature)) score += 140;
+    if (/coupon/.test(signature) && !PLATFORM_PROMO_CONTROL.test(signature)) score -= 40;
     if (/gift|card|сертификат|address|phone|email|payment/.test(signature)) score -= 180;
     if (['text', 'search', ''].includes(input.type || '')) score += 15;
     if (Safety.isVisible(input) && !input.disabled && !input.readOnly) score += 40;
     return score;
   }
 
-  function findPromoInput() {
+  function findPlatformPromoInput() {
     return Array.from(document.querySelectorAll('input')).map((element) => ({ element, score: inputScore(element) }))
       .filter((row) => row.score >= 100 && Safety.isVisible(row.element) && !row.element.disabled && !row.element.readOnly)
       .sort((a, b) => b.score - a.score)[0]?.element || null;
@@ -142,25 +143,25 @@
     return score;
   }
 
-  function findRemoveButton(code, input = findPromoInput()) {
+  function findRemoveButton(code, input = findPlatformPromoInput()) {
     const scoped = input ? scopedControls(input) : [];
     return Array.from(document.querySelectorAll('button,[role="button"],a')).slice(0, 1400)
       .map((element) => ({ element, score: scoreRemoveControl(element, { code, input, scoped }) }))
       .filter((row) => row.score >= 100).sort((a, b) => b.score - a.score)[0]?.element || null;
   }
 
-  function findRevealControl() {
+  function findPlatformPromoRevealControl() {
     return Array.from(document.querySelectorAll('button,[role="button"],summary')).slice(0, 1200).find((element) => {
       const label = Safety.labelOf(element);
-      return Safety.isVisible(element) && label.length <= 120 && PROMO_WORD.test(label) && !Safety.isForbiddenActionLabel(label);
+      return Safety.isVisible(element) && label.length <= 120 && PLATFORM_PROMO_CONTROL.test(label) && !GENERIC_COUPON_ACTION.test(label) && !Safety.isForbiddenActionLabel(label);
     }) || null;
   }
 
   async function ensurePromoInput() {
-    let input = findPromoInput(); if (input) return input;
-    const reveal = findRevealControl(); if (!reveal) return null;
-    Safety.safeClick(reveal, { purpose: 'Открытие поля промокода', intent: 'PROMO_SURFACE', requirePattern: PROMO_WORD });
-    await waitForCondition(() => findPromoInput(), 4000); input = findPromoInput(); return input;
+    let input = findPlatformPromoInput(); if (input) return input;
+    const reveal = findPlatformPromoRevealControl(); if (!reveal) return null;
+    Safety.safeClick(reveal, { purpose: 'Открытие поля промокода', intent: 'PROMO_SURFACE', requirePattern: PLATFORM_PROMO_CONTROL });
+    await waitForCondition(() => findPlatformPromoInput(), 4000); input = findPlatformPromoInput(); return input;
   }
 
   function nativeSetInput(input, value) {
@@ -284,7 +285,52 @@
 
   function safeIdentityHash(value) { return P.identityTextHash(normalize(value)); }
 
-  function visibleCheckoutLines(scope) {
+  let lastVisibleLineDetection = { strategy: 'NONE', anchorSignals: [] };
+
+  function isWithin(root, element) {
+    for (let node = element; node; node = node.parentElement) if (node === root) return true;
+    return false;
+  }
+
+  function isOldLinePrice(element) {
+    for (let node = element, depth = 0; node && depth < 3; node = node.parentElement, depth += 1) {
+      if (/^(?:DEL|S)$/i.test(node.tagName || '') || /(?:old|original|line-through)/i.test(normalize(`${node.className || ''} ${node.getAttribute?.('data-testid') || ''}`))) return true;
+      const decoration = getComputedStyle(node).textDecorationLine || getComputedStyle(node).textDecoration || '';
+      if (/line-through/i.test(decoration)) return true;
+    }
+    return false;
+  }
+
+  function explicitLineQuantity(root, descendants = []) {
+    const quantityElement = root.querySelector?.('input[name*="quant" i],input[id*="quant" i],input[aria-label*="quant" i],select[name*="quant" i],[data-quantity]');
+    const explicit = attributeFrom(root, ['data-quantity']) || quantityElement?.value || normalize(root.innerText || root.textContent || '').match(/(?:qty|quantity|кол(?:-?во|ичество))\s*[:×x]?\s*(\d{1,3})(?:\s|$)/i)?.[1] || normalize(root.innerText || root.textContent || '').match(/(?:^|\s)(\d{1,3})\s*(?:шт\.?|pcs?|pieces?)(?:\s|$)/i)?.[1];
+    if (explicit !== null && explicit !== undefined && explicit !== '' && Number.isFinite(Number(explicit)) && Number(explicit) > 0 && Number(explicit) <= 999) return { value: Number(explicit), control: !!quantityElement || /(?:qty|quantity|кол(?:-?во|ичество)|шт\.?|pcs?|pieces?)/i.test(normalize(root.innerText || root.textContent || '')) };
+    const controls = descendants.filter(Safety.isVisible).map((element, index) => ({ element, index, label: normalize(element.innerText || element.textContent || element.getAttribute?.('aria-label') || '') }));
+    const minus = controls.find((row) => /^(?:-|−|–|minus|decrement|уменьшить)$/i.test(row.label));
+    const plus = controls.find((row) => /^(?:\+|plus|increment|увеличить)$/i.test(row.label));
+    if (!minus || !plus || minus.index >= plus.index) return { value: null, control: false };
+    const number = controls.find((row) => row.index > minus.index && row.index < plus.index && /^\d{1,3}$/.test(row.label));
+    const value = number ? Number(number.label) : null;
+    return { value: Number.isFinite(value) && value > 0 && value <= 999 ? value : null, control: Number.isFinite(value) && value > 0 && value <= 999 };
+  }
+
+  function linePriceFromElements(elements, recent = null) {
+    const matches = [];
+    for (const element of elements) {
+      if (!Safety.isVisible(element) || isOldLinePrice(element)) continue;
+      const text = normalize(element.innerText || element.textContent || '');
+      if (!text || text.length > 120 || /(?:shipping|delivery|достав|итого|order\s*total|total|tax|налог)/i.test(text)) continue;
+      const quotes = P.extractPriceQuotes(text, 'CHECKOUT_LINE').filter((row) => !row.isRange && row.currency);
+      for (const quote of quotes) {
+        if (recent && (quote.currency !== recent.currency || Math.abs(quote.value - recent.price) > 0.01)) continue;
+        matches.push({ value: quote.value, currency: quote.currency, element });
+      }
+    }
+    const unique = [...new Map(matches.map((row) => [`${row.value}|${row.currency}`, row])).values()];
+    return unique.length === 1 ? unique[0] : null;
+  }
+
+  function selectorCheckoutLines(scope) {
     if (!scope.strong) return [];
     const selector = '[data-testid*="line-item" i],[data-pl*="line-item" i],[data-testid*="order-item" i],[data-pl*="order-item" i],[data-testid*="cart-item" i],[data-pl*="cart-item" i],[class*="checkout-item" i],[class*="order-item" i],[class*="cart-item" i]';
     const rawRoots = [...new Set(Array.from(document.querySelectorAll(selector)).filter(Safety.isVisible).slice(0, 120))];
@@ -295,10 +341,7 @@
       return text;
     };
     const findText = (root, selectors) => {
-      for (const childSelector of selectors) {
-        const element = root.querySelector?.(childSelector); const text = safeText(element);
-        if (text) return text;
-      }
+      for (const childSelector of selectors) { const text = safeText(root.querySelector?.(childSelector)); if (text) return text; }
       return null;
     };
     const lines = [];
@@ -307,22 +350,69 @@
       const title = findText(root, ['[data-testid*="title" i]', '[data-pl*="title" i]', '[class*="item-title" i]', '[class*="product-title" i]', 'a[href*="/item/"]']);
       const variant = findText(root, ['[data-testid*="variant" i]', '[data-testid*="option" i]', '[data-pl*="variant" i]', '[class*="variant" i]', '[class*="sku-info" i]', '[class*="option" i]'])
         ?.replace(/^(?:цвет|color|вариант|variant|variation|комплектация|configuration|версия|version|размер|size)\s*:\s*/i, '') || null;
-      const quantityElement = root.querySelector?.('input[name*="quant" i],input[id*="quant" i],input[aria-label*="quant" i],select[name*="quant" i],[data-quantity]');
-      const quantityText = attributeFrom(root, ['data-quantity']) || quantityElement?.value || normalize(root.innerText || root.textContent || '').match(/(?:qty|quantity|кол(?:-?во|ичество)|×|x)\s*[:×x]?\s*(\d{1,3})(?:\s|$)/i)?.[1];
-      const quantity = quantityText !== null && quantityText !== undefined && quantityText !== '' && Number.isFinite(Number(quantityText)) && Number(quantityText) > 0 && Number(quantityText) <= 999 ? Number(quantityText) : null;
-      let price = null; let currency = null;
-      const priceSelectors = ['[data-testid*="line-price" i]', '[data-testid*="item-price" i]', '[data-pl*="line-price" i]', '[data-pl*="item-price" i]', '[class*="line-price" i]', '[class*="item-price" i]', '[class*="product-price" i]'];
-      for (const priceSelector of priceSelectors) {
-        const element = root.querySelector?.(priceSelector); const text = normalize(element?.innerText || element?.textContent || '');
-        if (!text || text.length > 120 || /(?:shipping|delivery|достав|итого|total|tax|налог)/i.test(text)) continue;
-        const quotes = P.extractPriceQuotes(text, 'CHECKOUT_LINE').filter((row) => !row.isRange && row.currency);
-        if (quotes.length !== 1) continue;
-        price = quotes[0].value; currency = quotes[0].currency; break;
+      const descendants = Array.from(root.querySelectorAll?.('button,[role="button"],span,input,select') || []).slice(0, 250);
+      const quantity = explicitLineQuantity(root, descendants).value;
+      const priceElements = [];
+      for (const priceSelector of ['[data-testid*="line-price" i]', '[data-testid*="item-price" i]', '[data-pl*="line-price" i]', '[data-pl*="item-price" i]', '[class*="line-price" i]', '[class*="item-price" i]', '[class*="product-price" i]']) {
+        const element = root.querySelector?.(priceSelector); if (element) priceElements.push(element);
       }
-      if (!(title || variant || Number.isFinite(quantity) || Number.isFinite(price))) continue;
-      lines.push({ titleHash: safeIdentityHash(title), variantHash: safeIdentityHash(variant), quantity, price, currency });
+      const price = linePriceFromElements([...new Set(priceElements)]);
+      if (!(title || variant || Number.isFinite(quantity) || price)) continue;
+      lines.push({ titleHash: safeIdentityHash(title), variantHash: safeIdentityHash(variant), quantity, price: price?.value ?? null, currency: price?.currency || null });
     }
     return lines;
+  }
+
+  function recentHashAnchorCheckoutLines(scope) {
+    const recentState = recentProductContextState(); const recent = recentState.context;
+    if (!scope.strong || !recent?.titleHash || !Number.isFinite(recent.price) || !recent.currency) return [];
+    const compact = Array.from(document.querySelectorAll('div,span,p,a,strong,b,label')).filter(Safety.isVisible).slice(0, 3500)
+      .filter((element) => { const text = normalize(element.innerText || element.textContent || ''); return text && text.length <= 260; });
+    const titleAnchors = compact.filter((element) => safeIdentityHash(element.innerText || element.textContent || '') === recent.titleHash);
+    const variantAnchors = recent.variantHash ? compact.filter((element) => safeIdentityHash((element.innerText || element.textContent || '').replace(/^(?:цвет|color|вариант|variant|variation|комплектация|configuration|версия|version|размер|size)\s*:\s*/i, '')) === recent.variantHash) : [];
+    const observedSignals = new Set(); if (titleAnchors.length) observedSignals.add('TITLE_HASH'); if (variantAnchors.length) observedSignals.add('VARIANT_HASH');
+    const bestByAnchor = [];
+    for (const anchor of titleAnchors.slice(0, 8)) {
+      const candidates = []; let root = anchor.parentElement;
+      for (let depth = 0; root && depth < 8; depth += 1, root = root.parentElement) {
+        if (/^(?:BODY|HTML)$/i.test(root.tagName || '') || !Safety.isVisible(root)) continue;
+        const text = normalize(root.innerText || root.textContent || ''); const rect = root.getBoundingClientRect?.() || {};
+        if (!text || text.length > 1200 || Number(rect.width) > 1800 || Number(rect.height) > 720) continue;
+        if (/(?:recipient|получател|телефон|phone|address|адрес|итого|order\s*total|доставка|shipping|налог|tax)/i.test(text)) continue;
+        const titlesInside = titleAnchors.filter((element) => isWithin(root, element));
+        if (titlesInside.length !== 1) continue;
+        const variantInside = recent.variantHash ? variantAnchors.filter((element) => isWithin(root, element)) : [];
+        if (recent.variantHash && variantInside.length !== 1) continue;
+        const descendants = compact.filter((element) => element !== root && isWithin(root, element));
+        const price = linePriceFromElements(descendants, recent); if (!price) continue;
+        const quantity = explicitLineQuantity(root, descendants); const image = root.querySelector?.('img,picture,[role="img"]');
+        const signals = ['TITLE_HASH', 'LINE_PRICE']; if (recent.variantHash) signals.push('VARIANT_HASH');
+        if (quantity.control) signals.push('QUANTITY_CONTROL'); if (image && Safety.isVisible(image)) signals.push('PRODUCT_VISUAL');
+        candidates.push({ root, textLength: text.length, area: Math.max(0, Number(rect.width) || 0) * Math.max(0, Number(rect.height) || 0), line: { titleHash: recent.titleHash, variantHash: recent.variantHash || null, quantity: quantity.value, price: price.value, currency: price.currency }, signals });
+      }
+      candidates.sort((a, b) => a.textLength - b.textLength || a.area - b.area);
+      if (candidates[0]) bestByAnchor.push(candidates[0]);
+    }
+    const uniqueRoots = [...new Map(bestByAnchor.map((row) => [row.root, row])).values()];
+    if (uniqueRoots.length !== 1) { lastVisibleLineDetection = { strategy: 'NONE', anchorSignals: [...observedSignals] }; return []; }
+    uniqueRoots[0].signals.forEach((signal) => observedSignals.add(signal));
+    lastVisibleLineDetection = { strategy: 'RECENT_HASH_ANCHOR', anchorSignals: [...observedSignals] };
+    return [uniqueRoots[0].line];
+  }
+
+  function visibleCheckoutLines(scope) {
+    lastVisibleLineDetection = { strategy: 'NONE', anchorSignals: [] };
+    const selectorLines = selectorCheckoutLines(scope);
+    if (selectorLines.length) {
+      const signals = new Set();
+      if (selectorLines.some((line) => line.titleHash)) signals.add('TITLE_HASH');
+      if (selectorLines.some((line) => line.variantHash)) signals.add('VARIANT_HASH');
+      if (selectorLines.some((line) => Number.isFinite(line.price))) signals.add('LINE_PRICE');
+      if (selectorLines.some((line) => Number.isFinite(line.quantity))) signals.add('QUANTITY_CONTROL');
+      lastVisibleLineDetection = { strategy: 'SELECTOR', anchorSignals: [...signals] };
+      return selectorLines;
+    }
+    return recentHashAnchorCheckoutLines(scope);
   }
 
   function checkoutIdentityScopeEvidence() {
@@ -333,7 +423,7 @@
     const headings = Array.from(document.querySelectorAll('h1,h2,[role="heading"],[aria-level]')).filter(Safety.isVisible).slice(0, 120);
     const headingFound = headings.some((element) => /^(?:оформление\s+заказа|подтверждение\s+заказа|checkout|order\s+(?:confirmation|review)|shopping\s+cart|корзина)(?:\s|$)/i.test(normalize(element.innerText || element.textContent || '')));
     if (headingFound) evidenceTypes.push('CHECKOUT_HEADING');
-    const promoFound = !!(findPromoInput() || findRevealControl()); if (promoFound) evidenceTypes.push('CHECKOUT_PROMO_CONTROL');
+    const promoFound = !!(findPlatformPromoInput() || findPlatformPromoRevealControl()); if (promoFound) evidenceTypes.push('CHECKOUT_PROMO_CONTROL');
     const orderActionFound = Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(Safety.isVisible).slice(0, 500)
       .some((element) => /^(?:оформить\s+заказ|разместить\s+заказ|подтвердить\s+заказ|place\s+order|submit\s+order|confirm\s+order)$/i.test(Safety.labelOf(element)));
     if (orderActionFound) evidenceTypes.push('CHECKOUT_ORDER_ACTION_READ_ONLY');
@@ -350,6 +440,7 @@
       recentProductContextAvailable: recent.available, recentProductContextFresh: recent.fresh,
       recentProductExactItemMatchCount: 0, recentProductExactSkuMatchCount: 0,
       visibleLineCount: 0, visibleLinesWithTitle: 0, visibleLinesWithVariant: 0, visibleLinesWithQuantity: 0, visibleLinesWithPrice: 0,
+      visibleLineDetectionStrategy: 'NONE', visibleLineAnchorSignals: [],
       structuredMatchedLineCount: 0, structuredUnmatchedCandidateCount: 0, winningEvidenceTypes: []
     };
   }
@@ -506,6 +597,8 @@
       visibleLinesWithVariant: visibleLines.filter((line) => !!line.variantHash).length,
       visibleLinesWithQuantity: visibleLines.filter((line) => Number.isFinite(line.quantity)).length,
       visibleLinesWithPrice: visibleLines.filter((line) => Number.isFinite(line.price) && !!line.currency).length,
+      visibleLineDetectionStrategy: lastVisibleLineDetection.strategy,
+      visibleLineAnchorSignals: lastVisibleLineDetection.anchorSignals.slice(),
       structuredMatchedLineCount: corroborated ? 1 : 0,
       structuredUnmatchedCandidateCount: Math.max(0, grouped.size - (corroborated ? 1 : items.length)),
       winningEvidenceTypes: corroborated ? corroborated.evidence.slice() : []
@@ -584,14 +677,16 @@
     const headings = Array.from(document.querySelectorAll('h1,h2,[role="heading"],[aria-level]')).filter(Safety.isVisible).slice(0, 160);
     const headingFound = headings.some((element) => /^(?:оформление\s+заказа|подтверждение\s+заказа|checkout|order\s+(?:confirmation|review)|shopping\s+cart|корзина)(?:\s|$)/i.test(normalize(element.innerText || element.textContent || element.getAttribute?.('aria-label') || '')));
     if (headingFound) signals.push('CHECKOUT_HEADING');
-    const promoFound = !!(findPromoInput() || findRevealControl()); if (promoFound) signals.push('PROMO_CONTROL');
+    const platformPromoInputFound = !!findPlatformPromoInput();
+    const platformPromoRevealFound = !!findPlatformPromoRevealControl();
+    const promoFound = platformPromoInputFound || platformPromoRevealFound; if (promoFound) signals.push('PROMO_CONTROL');
     const totalFound = Number.isFinite(state.financial?.total) && (state.breakdown?.candidates || []).some((row) => row.kind === 'total');
     if (totalFound) signals.push('ORDER_TOTAL');
     const orderActionFound = Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(Safety.isVisible).slice(0, 800).some((element) => /^(?:оформить\s+заказ|разместить\s+заказ|подтвердить\s+заказ|place\s+order|submit\s+order|confirm\s+order)$/i.test(Safety.labelOf(element)));
     if (orderActionFound) signals.push('ORDER_ACTION_READ_ONLY');
     const candidate = urlMatched || markerFound || headingFound || orderActionFound || (promoFound && totalFound);
     const detected = urlMatched || (markerFound && (headingFound || promoFound || totalFound || orderActionFound)) || (headingFound && (promoFound || totalFound || orderActionFound)) || (promoFound && totalFound && orderActionFound);
-    return { candidate, detected, pageClass: pageType === 'CART' ? 'CART' : 'CHECKOUT', signals, urlMatched, markerFound, headingFound, promoFound, totalFound, orderActionFound };
+    return { candidate, detected, pageClass: pageType === 'CART' ? 'CART' : 'CHECKOUT', signals, urlMatched, markerFound, headingFound, promoFound, platformPromoInputFound, platformPromoRevealFound, totalFound, orderActionFound };
   }
 
   function effectiveCheckoutBinding(checkout = null) {
@@ -602,12 +697,15 @@
   function safeWidgetDiagnostics(context, checkout) {
     const fingerprint = checkout.fingerprint || {}; const items = fingerprint.items || [];
     let pathname = null; try { pathname = new URL(location.href).pathname; } catch (_) {}
-    const input = findPromoInput(); const selectors = { inputFound: !!input, applyFound: !!findApplyButton(input), revealFound: !!findRevealControl() };
+    const input = findPlatformPromoInput(); const reveal = findPlatformPromoRevealControl(); const selectors = { inputFound: !!input, applyFound: !!findApplyButton(input), revealFound: !!reveal };
     return {
       pathname,
       pageType: context.pageType,
       checkoutSurfaceDetected: context.checkoutSurfaceDetected,
       checkoutSurfaceSignals: context.checkoutSurfaceSignals,
+      promoTestingSurface: context.promoTestingSurface,
+      platformPromoInputFound: selectors.inputFound,
+      platformPromoRevealFound: selectors.revealFound,
       financial: C.buildFinancialSnapshot(checkout.financial),
       fingerprint: { quality: fingerprint.quality || 'WEAK', componentsUsed: Array.isArray(fingerprint.componentsUsed) ? fingerprint.componentsUsed.slice() : [] },
       items: {
@@ -632,6 +730,8 @@
         visibleLinesWithVariant: lastStructuredDiagnostics.visibleLinesWithVariant,
         visibleLinesWithQuantity: lastStructuredDiagnostics.visibleLinesWithQuantity,
         visibleLinesWithPrice: lastStructuredDiagnostics.visibleLinesWithPrice,
+        visibleLineDetectionStrategy: lastStructuredDiagnostics.visibleLineDetectionStrategy,
+        visibleLineAnchorSignals: lastStructuredDiagnostics.visibleLineAnchorSignals.slice(),
         structuredMatchedLineCount: lastStructuredDiagnostics.structuredMatchedLineCount,
         structuredUnmatchedCandidateCount: lastStructuredDiagnostics.structuredUnmatchedCandidateCount,
         winningEvidenceTypes: lastStructuredDiagnostics.winningEvidenceTypes.slice()
@@ -668,7 +768,7 @@
     return sanitizeFeedback([...new Set(blocks.filter(Boolean))].join('\n'));
   }
 
-  function appliedIndicator(code, input = findPromoInput()) {
+  function appliedIndicator(code, input = findPlatformPromoInput()) {
     const upper = String(code || '').toUpperCase(); const candidates = []; let node = input?.parentElement;
     for (let depth = 0; node && depth < 4; depth += 1, node = node.parentElement) candidates.push(node);
     candidates.push(...Array.from(document.querySelectorAll('[class*="promo" i],[class*="coupon" i],[class*="voucher" i],[class*="discount" i],[aria-live],[role="status"],[role="alert"]')).slice(0, 600));
@@ -721,13 +821,13 @@
       nativeSetInput(input, ''); await waitForDomSignal(120); nativeSetInput(input, code); return { ok: true };
     },
     clickApply: async () => {
-      const input = findPromoInput();
+      const input = findPlatformPromoInput();
       const button = await waitForCondition(() => findApplyButton(input), 2500);
       if (!button) return { ok: false, message: 'AliExpress не показал безопасную кнопку применения; результат кода не подтверждён' };
       Safety.safeClick(button, { purpose: 'Применение промокода', intent: 'APPLY_PROMO' }); return { ok: true };
     },
     observe: async (code) => {
-      const input = findPromoInput();
+      const input = findPlatformPromoInput();
       return { checkout: readCheckout(), feedbackText: feedbackText(input), appliedEvidence: appliedIndicator(code, input), safetyStatus: safetyStopStatus() };
     },
     waitForSignal: (ms) => waitForDomSignal(ms),
@@ -735,7 +835,7 @@
       const button = findRemoveButton(code); if (!button) return { ok: false, message: 'AliExpress не показал безопасную кнопку удаления применённого промокода' };
       Safety.safeClick(button, { purpose: 'Удаление проверенного промокода', intent: 'REMOVE_PROMO' }); return { ok: true };
     },
-    clearCode: async () => { const input = findPromoInput(); if (input) nativeSetInput(input, ''); },
+    clearCode: async () => { const input = findPlatformPromoInput(); if (input) nativeSetInput(input, ''); },
     safetyStatus: async () => safetyStopStatus(),
     isCancelled: () => cancelRequested,
     delay: (ms) => sleep(ms),
@@ -766,7 +866,7 @@
   }
 
   function selectorDiagnostics() {
-    const input = findPromoInput(); const apply = findApplyButton(input); const reveal = findRevealControl();
+    const input = findPlatformPromoInput(); const apply = findApplyButton(input); const reveal = findPlatformPromoRevealControl();
     return {
       inputFound: !!input, input: P.safeSnippet(input), applyFound: !!apply, apply: P.safeSnippet(apply), applyScore: apply ? scoreApplyControl(apply, input) : null,
       revealFound: !!reveal, reveal: P.safeSnippet(reveal), existingPlatformCode: existingPlatformCode()
@@ -776,19 +876,25 @@
   function safeUrl() { try { const url = new URL(location.href); return `${url.origin}${url.pathname}`; } catch (_) { return null; } }
 
   function checkoutContext() {
-    const checkout = readCheckout();
+    const initialPageType = P.parsePageType(location.href);
+    const checkout = initialPageType === 'CART'
+      ? { breakdown: C.emptyBreakdown(), financial: C.buildFinancialSnapshot(C.emptyBreakdown()), fingerprint: C.buildCheckoutFingerprint({ items: [] }) }
+      : readCheckout();
     const { binding, pageType, surface } = effectiveCheckoutBinding(checkout);
     const fingerprint = checkout.fingerprint || {};
     const financial = checkout.financial || {};
-    const supportedPage = surface.detected && ['CART', 'CHECKOUT'].includes(binding.pageClass);
+    const promoTestingSurface = pageType === 'CHECKOUT' && surface.detected && (surface.platformPromoInputFound || surface.platformPromoRevealFound);
+    const checkoutWidgetVisible = pageType === 'CHECKOUT' && surface.detected;
     const reliableIdentity = verifier.fingerprintIsReliable(fingerprint);
     const hasTotal = Number.isFinite(financial.total);
     const context = {
-      available: supportedPage && reliableIdentity && hasTotal,
+      available: promoTestingSurface && reliableIdentity && hasTotal,
       pageType,
       binding,
       checkoutSurfaceDetected: surface.detected,
       checkoutSurfaceCandidate: surface.candidate,
+      checkoutWidgetVisible,
+      promoTestingSurface,
       checkoutSurfaceSignals: surface.signals.slice(),
       checkoutFingerprint: fingerprint,
       currency: financial.currency || fingerprint.currency || null,
@@ -802,7 +908,9 @@
       isNewUser: null,
       newUserStatusConfidence: 0,
       fingerprintQuality: fingerprint.quality || 'WEAK',
-      reason: !supportedPage ? 'Не удалось распознать страницу checkout' : !reliableIdentity ? 'Не удалось надёжно определить состав заказа' : !hasTotal ? 'Не удалось определить итоговую сумму' : null
+      reason: pageType === 'CART' ? 'Проверка platform promo code доступна на этапе оформления заказа' :
+        !checkoutWidgetVisible ? 'Не удалось распознать страницу checkout' : !promoTestingSurface ? 'Поле platform promo code на checkout не найдено' :
+          !reliableIdentity ? 'Не удалось надёжно определить состав заказа' : !hasTotal ? 'Не удалось определить итоговую сумму' : null
     };
     context.diagnostics = safeWidgetDiagnostics(context, checkout); return context;
   }
@@ -819,6 +927,9 @@
     }
     if (message.type === 'CH_TEST_PROMOS') {
       if (running) return { status: 'BUSY', message: 'Проверка уже выполняется' };
+      await refreshRecentProductContext().catch(() => {});
+      const context = checkoutContext();
+      if (!context.available) return { status: 'UNAVAILABLE', stopReason: context.reason, results: [] };
       running = true; cancelRequested = false;
       try { return await testCodes(message.candidates || message.codes || [], message.queueMeta || null); }
       catch (error) {
@@ -836,7 +947,7 @@
   }
 
   globalThis.CouponHunterPromoTester = {
-    normalizeCodes, normalizeCandidateQueue, inputScore, scoreApplyControl, scoreRemoveControl, findApplyButton, findRemoveButton,
+    normalizeCodes, normalizeCandidateQueue, inputScore, findPlatformPromoInput, findPlatformPromoRevealControl, ensurePromoInput, scoreApplyControl, scoreRemoveControl, findApplyButton, findRemoveButton,
     readBreakdown, readCheckout, summaryRows, checkoutItems, selectedShippingMethod, appliedIndicator, existingPlatformCode, selectorDiagnostics, diagnostics,
     checkoutContext, checkoutSurfaceEvidence, effectiveCheckoutBinding, safeWidgetDiagnostics, visibleCheckoutLines,
     refreshRecentProductContext, setRecentProductContext, recentProductContextState, executeCommand,

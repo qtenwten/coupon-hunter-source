@@ -93,7 +93,7 @@ test('product parser rejects shipping, tax, old and recommendation prices', (t) 
   t.ok(product.debug.priceCandidates.some((row) => row.context?.includes('Доставка')));
   t.ok(product.debug.priceCandidates.some((row) => row.context?.includes('Налог')));
   t.ok(product.debug.priceCandidates.some((row) => row.recommendation));
-  t.equal(product.parserVersion, '3.3.3');
+  t.equal(product.parserVersion, '3.3.4');
 });
 
 test('live product price semantics prefer current RUB price over quantity and delivery', (t) => {
