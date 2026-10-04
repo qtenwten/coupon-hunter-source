@@ -28,6 +28,16 @@ test('valid code requires applied evidence and a real total decrease', (t) => {
   t.equal(result.status, C.STATUS.UNKNOWN_ERROR); t.equal(result.verified, false);
 });
 
+test('generic SITE_REJECTED requires an explicit promo rejection', (t) => {
+  const before = { total: 9890, currency: 'RUB' };
+  const rejected = C.classifyVerification({ before, after: before, text: 'Не удалось применить этот промокод' });
+  const silent = C.classifyVerification({ before, after: before, text: '' });
+  const unrelated = C.classifyVerification({ before, after: before, text: 'Ошибка оплаты заказа' });
+  t.equal(rejected.status, C.STATUS.SITE_REJECTED); t.equal(rejected.verified, true);
+  t.equal(silent.status, C.STATUS.UNKNOWN_ERROR); t.equal(silent.verified, false);
+  t.equal(unrelated.status, C.STATUS.UNKNOWN_ERROR); t.equal(unrelated.verified, false);
+});
+
 test('CAPTCHA and rate limit are safety stops', (t) => {
   for (const text of ['Security verification: CAPTCHA', 'Too many attempts, try again later']) {
     const result = C.classifyVerification({ text, before: { total: 100 }, after: { total: 100 } });

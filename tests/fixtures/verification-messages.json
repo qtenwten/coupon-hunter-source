@@ -12,6 +12,13 @@
     { "text": "Сначала получите купон", "status": "NOT_COLLECTED" },
     { "text": "Too many attempts, try again later", "status": "RATE_LIMITED" },
     { "text": "Security verification: verify you are human", "status": "CAPTCHA" },
+    { "text": "Промокод недоступен для этого заказа", "status": "NOT_APPLICABLE_TO_ITEMS" },
+    { "text": "Не удалось применить этот промокод", "status": "SITE_REJECTED" },
+    { "text": "Сумма заказа должна быть не менее 10 000 ₽", "status": "MINIMUM_SPEND_NOT_MET" },
+    { "text": "Promo code is not available in your country", "status": "REGION_RESTRICTED" },
+    { "text": "Вы уже использовали этот промокод", "status": "ALREADY_USED" },
+    { "text": "Лимит использований исчерпан", "status": "OUT_OF_STOCK" },
+    { "text": "Ошибка оплаты заказа", "status": null },
     { "text": "Неопознанное сообщение магазина", "status": null }
   ]
 }

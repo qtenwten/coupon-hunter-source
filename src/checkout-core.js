@@ -11,7 +11,7 @@
     MINIMUM_SPEND_NOT_MET: 'MINIMUM_SPEND_NOT_MET', NOT_APPLICABLE_TO_ITEMS: 'NOT_APPLICABLE_TO_ITEMS',
     REGION_RESTRICTED: 'REGION_RESTRICTED', ACCOUNT_RESTRICTED: 'ACCOUNT_RESTRICTED', ALREADY_USED: 'ALREADY_USED',
     OUT_OF_STOCK: 'OUT_OF_STOCK', NOT_COLLECTED: 'NOT_COLLECTED', RATE_LIMITED: 'RATE_LIMITED',
-    CAPTCHA: 'CAPTCHA', UNKNOWN_ERROR: 'UNKNOWN_ERROR'
+    CAPTCHA: 'CAPTCHA', SITE_REJECTED: 'SITE_REJECTED', UNKNOWN_ERROR: 'UNKNOWN_ERROR'
   });
 
   const normalize = (value = '') => String(value).replace(/[\s\u00A0\u202F]+/g, ' ').trim();
@@ -154,14 +154,15 @@
       [STATUS.RATE_LIMITED, /(too\s*many|слишком\s*много\s*попыт|try\s*again\s*later|повторите\s*позже|rate\s*limit|frequent\s*request|请求频繁)/i],
       [STATUS.EXPIRED, /(expired|ист[её]к|срок.*(?:ист[её]к|законч)|больше\s*не\s*действ)/i],
       [STATUS.NOT_STARTED, /(not\s*started|ещ[её]\s*не\s*(?:начал|действ)|starts?\s*(?:on|at)|будет\s*действ)/i],
-      [STATUS.MINIMUM_SPEND_NOT_MET, /(minimum|min\.?\s*spend|order\s*amount|минимальн.*сумм|сумма.*(?:недостат|меньше)|доберите|необходимо.*(?:потратить|заказ))/i],
-      [STATUS.NOT_APPLICABLE_TO_ITEMS, /(not\s*applicable|does(?:n't| not)\s*apply|eligible\s*items|не\s*применим|не\s*подходит.*товар|товар.*не\s*участв)/i],
-      [STATUS.REGION_RESTRICTED, /(region|country|location|регион|стран|недоступен.*(?:регион|стран)|not\s*available\s*in)/i],
-      [STATUS.ACCOUNT_RESTRICTED, /(new\s*user|selected\s*(?:user|account)|account.*(?:not\s*eligible|restricted)|только.*нов.*польз|аккаунт.*не\s*соответ|персональн)/i],
-      [STATUS.ALREADY_USED, /(already\s*used|used\s*before|уже\s*использован|ранее\s*использ)/i],
-      [STATUS.OUT_OF_STOCK, /(fully\s*redeemed|redemption.*limit|out\s*of\s*stock|законч(?:ил|ились)|исчерпан|лимит.*исчерпан|все\s*купон)/i],
+      [STATUS.MINIMUM_SPEND_NOT_MET, /(minimum|min\.?\s*spend|order\s*amount|минимальн.*сумм|сумма.*(?:недостат|меньше)|сумма\s*заказа\s*должна\s*быть|добавьте\s*товар(?:ов|ы)?\s*(?:ещ[её])?\s*на|недостаточн.*сумм.*заказ|доберите|необходимо.*(?:потратить|заказ))/i],
+      [STATUS.NOT_APPLICABLE_TO_ITEMS, /(not\s*applicable(?:\s*to\s*this\s*order)?|does(?:n't| not)\s*apply|eligible\s*items|не\s*применя(?:ется|ются).*заказ|не\s*подходит.*(?:заказ|товар)|не\s*действует.*(?:выбранн.*товар|этот\s*заказ)|промокод\s*недоступен\s*для\s*(?:этого\s*)?заказа|товар.*не\s*участв)/i],
+      [STATUS.REGION_RESTRICTED, /(?:region|country|location|регион|стран|недоступен.*(?:регион|стран)|not\s*available\s*in\s*(?:your\s*)?(?:country|region)|promo\s*code\s*is\s*not\s*available\s*in\s*your\s*country)/i],
+      [STATUS.ACCOUNT_RESTRICTED, /(new\s*(?:user|customer)|selected\s*(?:user|account)|account.*(?:not\s*eligible|restricted)|только.*нов.*польз|аккаунт.*(?:не\s*соответ|недоступ)|недоступен.*(?:этого|данного)\s*аккаунт|персональн)/i],
+      [STATUS.ALREADY_USED, /(already\s*used|used\s*before|уже\s*использовал(?:и)?|уже\s*использован|ранее\s*использ)/i],
+      [STATUS.OUT_OF_STOCK, /(fully\s*redeemed|redemption.*limit|out\s*of\s*stock|промокод(?:ы)?\s*законч|законч(?:ил|ились)|лимит\s*использован(?:ий|ия).*исчерпан|исчерпан.*лимит\s*использован|все\s*купон)/i],
       [STATUS.NOT_COLLECTED, /(collect\s*(?:the\s*)?(?:coupon|code)\s*first|not\s*collected|сначала.*получ|купон.*не\s*получен)/i],
-      [STATUS.INVALID, /(invalid|incorrect|not\s*valid|неверн|недейств|такого\s*код|код.*не\s*найден)/i]
+      [STATUS.INVALID, /(promo\s*code\s*(?:is\s*)?(?:invalid|unavailable)|invalid|incorrect|not\s*valid|промокод\s*(?:недействителен|недоступен)|не\s*удалось\s*применить\s*промокод|неверн|недейств|такого\s*код|код.*не\s*найден)/i],
+      [STATUS.SITE_REJECTED, /(?:промокод\s*(?:не\s*примен[её]н|отклон[её]н)|не\s*удалось\s*применить\s*(?:этот|данный)\s*промокод|(?:this|the)\s*promo\s*code\s*(?:was\s*)?(?:not\s*applied|could(?:n't|\s+not)\s*be\s*applied)|unable\s*to\s*apply\s*(?:this|the)\s*promo\s*code)/i]
     ];
     for (const [status, pattern] of rules) if (pattern.test(value)) return status;
     return null;

@@ -8,7 +8,7 @@
     TESTING: 'TESTING', COMPLETE: 'COMPLETE', CANCELLED: 'CANCELLED', UNAVAILABLE: 'UNAVAILABLE',
     BLOCKED: 'BLOCKED', SAFETY_STOP: 'SAFETY_STOP', BASELINE_LOST: 'BASELINE_LOST',
     CART_CHANGED: 'CART_CHANGED', CHECKOUT_IDENTITY_UNCERTAIN: 'CHECKOUT_IDENTITY_UNCERTAIN',
-    REMOVE_FAILED: 'REMOVE_FAILED', ERROR: 'ERROR'
+    REMOVE_FAILED: 'REMOVE_FAILED', INCONCLUSIVE_RESPONSE_STREAK: 'INCONCLUSIVE_RESPONSE_STREAK', ERROR: 'ERROR'
   });
 
   function createVerifier(adapter, options = {}) {
@@ -17,7 +17,9 @@
     const restorationTimeoutMs = options.restorationTimeoutMs || 9_000;
     const pollMs = options.pollMs || 350;
     const quietWindowMs = options.quietWindowMs || 1_000;
+    const responseQuietWindowMs = options.responseQuietWindowMs || 350;
     const attemptDelayMs = options.attemptDelayMs ?? 900;
+    const unknownStreakLimit = options.unknownStreakLimit || 3;
     const now = () => adapter.now?.() ?? Date.now();
     const iso = () => new Date(now()).toISOString();
     const persist = async (session) => { session.updatedAt = iso(); await adapter.persist?.(session); };
@@ -80,8 +82,33 @@
       return JSON.stringify([evidence.evidenceType || null, evidence.confidence || 0, evidence.snippet?.text || null, evidence.snippet?.ariaLabel || null, evidence.snippet?.class || null]);
     }
 
+    function responseEvidenceFor({ baselineCheckout, checkout, observation = {}, applyResult = {}, appliedEvidence = null, startedAt = null } = {}) {
+      const before = financialOf(baselineCheckout); const after = financialOf(checkout || baselineCheckout);
+      const raw = { ...(applyResult.responseEvidence || {}), ...(observation.responseEvidence || {}) };
+      const snippet = typeof raw.responseSnippet === 'string' ? raw.responseSnippet.replace(/[\s\u00A0\u202F]+/g, ' ').trim().slice(0, 200) : null;
+      return {
+        applyClicked: raw.applyClicked === true || applyResult.ok === true,
+        promoMutationSeen: raw.promoMutationSeen === true,
+        inputInvalid: typeof raw.inputInvalid === 'boolean' ? raw.inputInvalid : null,
+        applyButtonFound: raw.applyButtonFound === true || applyResult.ok === true,
+        appliedIndicatorFound: !!(appliedEvidence?.applied || observation.appliedEvidence?.applied || raw.appliedIndicatorFound),
+        totalBefore: Number.isFinite(before.total) ? before.total : null,
+        totalAfter: Number.isFinite(after.total) ? after.total : null,
+        totalChanged: Number.isFinite(before.total) && Number.isFinite(after.total) ? Math.abs(before.total - after.total) > 0.01 : false,
+        responseTextFound: !!snippet,
+        responseSource: snippet && typeof raw.responseSource === 'string' ? raw.responseSource.slice(0, 60) : null,
+        responseSnippet: snippet,
+        elapsedMs: Number.isFinite(raw.elapsedMs) ? Math.max(0, Math.round(raw.elapsedMs)) : Number.isFinite(startedAt) ? Math.max(0, Math.round(now() - startedAt)) : 0
+      };
+    }
+
+    function unknownMessage(evidence, fallback = null) {
+      if (evidence?.responseSnippet) return evidence.responseSnippet;
+      return fallback && fallback !== 'NO_CONCLUSIVE_SIGNAL' ? fallback : 'AliExpress не показал распознаваемый ответ';
+    }
+
     async function waitForTerminal(code, baselineCheckout, beforeObservation = {}) {
-      const started = now(); let lastObservation = null; let appliedEvidence = { applied: false, confidence: 0, evidenceType: null, snippet: null };
+      const started = now(); let lastObservation = null; let appliedEvidence = { applied: false, confidence: 0, evidenceType: null, snippet: null }; let pendingRejection = null;
       const beforeEvidenceSignature = evidenceSignature(beforeObservation.appliedEvidence);
       while (now() - started < verificationTimeoutMs) {
         const observation = await adapter.observe(code); lastObservation = observation;
@@ -96,8 +123,13 @@
           const stableSaving = C.computeSaving(financialOf(baselineCheckout), financialOf(stableCheckout));
           if (Number.isFinite(stableSaving) && stableSaving > 0) return { type: 'VALID', observation: { ...observation, checkout: stableCheckout, appliedEvidence }, saving: stableSaving };
         }
-        const textual = C.textOutcome(feedback);
-        if (textual && ![C.STATUS.CAPTCHA, C.STATUS.RATE_LIMITED].includes(textual)) return { type: 'REJECTED', status: textual, observation: { ...observation, feedbackText: feedback } };
+        const responseText = observation.responseEvidence?.responseSnippet || feedback;
+        const textual = C.textOutcome(responseText);
+        if (textual && ![C.STATUS.CAPTCHA, C.STATUS.RATE_LIMITED].includes(textual)) {
+          const signature = `${textual}|${responseText}`;
+          if (!pendingRejection || pendingRejection.signature !== signature) pendingRejection = { signature, since: now() };
+          if (now() - pendingRejection.since >= responseQuietWindowMs) return { type: 'REJECTED', status: textual, observation: { ...observation, feedbackText: responseText } };
+        } else pendingRejection = null;
         await adapter.waitForSignal(pollMs);
       }
       const observation = lastObservation || await adapter.observe(code);
@@ -112,31 +144,36 @@
       const entered = await adapter.enterCode(result.code);
       if (!entered?.ok) {
         transition(result, C.STATES.UNKNOWN, entered?.message || 'Поле промокода недоступно');
-        return { ...result, verified: false, verificationStatus: C.STATUS.UNKNOWN_ERROR, verificationMessage: entered?.message || 'Поле промокода недоступно', priceBefore: financialOf(baselineCheckout), priceAfter: financialOf(baselineCheckout), saving: 0 };
+        return { ...result, verified: false, verificationStatus: C.STATUS.UNKNOWN_ERROR, verificationMessage: entered?.message || 'Поле промокода недоступно', priceBefore: financialOf(baselineCheckout), priceAfter: financialOf(baselineCheckout), saving: 0, responseEvidence: responseEvidenceFor({ baselineCheckout }) };
       }
       const before = await adapter.observe(result.code);
       transition(result, C.STATES.APPLYING);
+      const applyStartedAt = now();
       const applied = await adapter.clickApply(result.code);
       if (!applied?.ok) {
         transition(result, C.STATES.UNKNOWN, applied?.message || 'Кнопка применения не найдена');
-        return { ...result, verified: false, verificationStatus: C.STATUS.UNKNOWN_ERROR, verificationMessage: applied?.message || 'Кнопка применения не найдена', priceBefore: financialOf(baselineCheckout), priceAfter: financialOf(baselineCheckout), saving: 0 };
+        const finalCapture = await adapter.finishResponseCapture?.() || {};
+        const responseEvidence = responseEvidenceFor({ baselineCheckout, observation: { responseEvidence: finalCapture }, applyResult: applied, startedAt: applyStartedAt });
+        return { ...result, verified: false, verificationStatus: C.STATUS.UNKNOWN_ERROR, verificationMessage: unknownMessage(responseEvidence, applied?.message || 'Кнопка применения не найдена'), priceBefore: financialOf(baselineCheckout), priceAfter: financialOf(baselineCheckout), saving: 0, responseEvidence };
       }
       transition(result, C.STATES.WAITING_RESPONSE);
       const terminal = await waitForTerminal(result.code, baselineCheckout, before);
-      const observation = terminal.observation || {};
+      const observation = terminal.observation || {}; const finalCapture = await adapter.finishResponseCapture?.() || {};
+      observation.responseEvidence = { ...(observation.responseEvidence || {}), ...finalCapture };
       let status = C.STATUS.UNKNOWN_ERROR; let verified = false; let reason = 'NO_CONCLUSIVE_SIGNAL';
       if (terminal.type === 'VALID') { status = C.STATUS.VALID_APPLIED; verified = true; reason = 'APPLIED_AND_TOTAL_DECREASED'; }
       else if (terminal.type === 'REJECTED') { status = terminal.status || C.STATUS.UNKNOWN_ERROR; verified = status !== C.STATUS.UNKNOWN_ERROR; reason = 'SITE_RESPONSE'; }
       else if (terminal.type === 'SAFETY_STOP') { status = terminal.status; reason = 'SAFETY_STOP'; }
       else if (terminal.type === 'CART_CHANGED') reason = 'CART_CHANGED';
+      const responseEvidence = responseEvidenceFor({ baselineCheckout, checkout: observation.checkout, observation, applyResult: applied, appliedEvidence: terminal.appliedEvidence || observation.appliedEvidence, startedAt: applyStartedAt });
       transition(result, status === C.STATUS.VALID_APPLIED ? C.STATES.APPLIED : status === C.STATUS.UNKNOWN_ERROR ? C.STATES.UNKNOWN : C.STATES.REJECTED, reason);
       return {
         ...result, verified, verificationStatus: status,
-        verificationMessage: (observation.feedbackText || reason).slice(0, 700),
+        verificationMessage: (status === C.STATUS.UNKNOWN_ERROR ? unknownMessage(responseEvidence, observation.feedbackText || reason) : responseEvidence.responseSnippet || observation.feedbackText || reason).slice(0, 700),
         priceBefore: financialOf(baselineCheckout), priceAfter: financialOf(observation.checkout || baselineCheckout),
         saving: terminal.type === 'VALID' ? terminal.saving : C.computeSaving(financialOf(baselineCheckout), financialOf(observation.checkout)),
         lastVerifiedAt: iso(), appliedEvidence: observation.appliedEvidence?.applied ? observation.appliedEvidence : null,
-        checkoutChanged: terminal.type === 'CART_CHANGED'
+        checkoutChanged: terminal.type === 'CART_CHANGED', responseEvidence
       };
     }
 
@@ -156,7 +193,7 @@
       const session = {
         version: 4, status: SESSION_STATUS.TESTING, origin: binding.origin, pageClass: binding.pageClass, pathClass: binding.pathClass || null,
         codes: candidates.map((row) => row.code), current: null, baseline: null, checkoutFingerprint: null,
-        currency: null, results: [], bestCode: null, createdAt: iso(), startedAt: iso(), stopReason: null
+        currency: null, results: [], bestCode: null, createdAt: iso(), startedAt: iso(), stopReason: null, consecutiveUnknowns: 0
       };
       await persist(session);
       if (!['CART', 'CHECKOUT'].includes(binding.pageClass)) { session.status = SESSION_STATUS.UNAVAILABLE; session.stopReason = 'Откройте корзину или checkout AliExpress'; await persist(session); return session; }
@@ -198,6 +235,12 @@
           await adapter.clearCode();
           const cleared = await waitForBaseline(baselineCheckout, Math.min(6_000, restorationTimeoutMs));
           if (!cleared.restored) { session.status = cleared.status; session.stopReason = cleared.status === SESSION_STATUS.CART_CHANGED ? 'Структура корзины изменилась после проверки' : 'Итоговая сумма изменилась после отклонённого кода'; break; }
+        }
+        session.consecutiveUnknowns = result.verificationStatus === C.STATUS.UNKNOWN_ERROR ? session.consecutiveUnknowns + 1 : 0;
+        if (session.consecutiveUnknowns >= unknownStreakLimit) {
+          session.status = SESSION_STATUS.INCONCLUSIVE_RESPONSE_STREAK;
+          session.stopReason = `Остановлено: ${unknownStreakLimit} неопределённых ответа подряд. AliExpress три раза подряд не дал распознаваемый результат. Проверка остановлена, чтобы не делать лишние попытки.`;
+          await persist(session); break;
         }
         await persist(session); await adapter.delay(attemptDelayMs);
       }

@@ -34,7 +34,13 @@ class FakeElement {
   click() { this.clicked = (this.clicked || 0) + 1; }
 }
 
-class FakeMutationObserver { constructor(callback) { this.callback = callback; } observe() {} disconnect() {} }
+class FakeMutationObserver {
+  static instances = [];
+  constructor(callback) { this.callback = callback; this.disconnected = false; FakeMutationObserver.instances.push(this); }
+  observe() {}
+  disconnect() { this.disconnected = true; }
+  trigger(mutations) { if (!this.disconnected) this.callback(mutations); }
+}
 
 class FakeDocument {
   constructor(map = {}, { title = 'AliExpress test', bodyText = '', lang = 'ru-RU' } = {}) {

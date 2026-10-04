@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__COUPON_HUNTER_PROMO_TESTER_V334__) return;
-  window.__COUPON_HUNTER_PROMO_TESTER_V334__ = true;
+  if (window.__COUPON_HUNTER_PROMO_TESTER_V335__) return;
+  window.__COUPON_HUNTER_PROMO_TESTER_V335__ = true;
 
   const P = globalThis.CouponHunterParser;
   const C = globalThis.CouponHunterCheckoutCore;
@@ -22,6 +22,7 @@
   let cancelRequested = false;
   let summaryRootCache = null;
   let recentProductContextCache = null;
+  let activePromoResponseCapture = null;
 
   const normalize = C.normalize;
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -60,6 +61,105 @@
       .replace(/(?:\+?\d[\s()-]*){10,16}/g, '[phone hidden]')
       .replace(/\b(?:\d[ -]*?){13,19}\b/g, '[number hidden]')
       .slice(0, 3000);
+  }
+
+  const PRIVATE_RESPONSE_TEXT = /(?:recipient|получател|delivery\s*address|адрес\s*достав|shipping\s*address|phone|телефон|e-?mail|payment|оплат|bank\s*card|card\s*(?:number|holder)|номер\s*карт|cvv|cvc)/i;
+  const RESPONSE_HELPER_SELECTOR = '[role="alert"],[aria-live],[class*="helper" i],[class*="hint" i],[class*="error" i],[class*="tip" i],[class*="notice" i],[class*="validation" i],[data-testid*="error" i],[data-testid*="message" i]';
+
+  function safePromoResponseText(value) {
+    const text = sanitizeFeedback(value).replace(/[\r\n]+/g, ' ').slice(0, 200);
+    if (!text || PRIVATE_RESPONSE_TEXT.test(text)) return null;
+    return text;
+  }
+
+  function promoResponseScope(input, applyButton = null) {
+    let node = input?.parentElement || applyButton?.parentElement || null;
+    for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
+      if (/^(?:BODY|HTML)$/i.test(node.tagName || '')) break;
+      const text = normalize(node.innerText || node.textContent || '');
+      const containsApply = !applyButton || isWithin(node, applyButton);
+      if (containsApply && text.length <= 1600 && (/^(?:FORM|SECTION|ASIDE)$/i.test(node.tagName || '') || PLATFORM_PROMO_CONTROL.test(text) || PROMO_WORD.test(text))) return node;
+    }
+    return input?.parentElement || applyButton?.parentElement || null;
+  }
+
+  function describedResponseNodes(input) {
+    const rows = [];
+    for (const [attribute, source] of [['aria-errormessage', 'ARIA_ERRORMESSAGE'], ['aria-describedby', 'ARIA_DESCRIBEDBY']]) {
+      const ids = normalize(input?.getAttribute?.(attribute) || '').split(/\s+/).filter(Boolean).slice(0, 5);
+      for (const id of ids) { const element = document.getElementById?.(id); if (element) rows.push({ element, source }); }
+    }
+    return rows;
+  }
+
+  function collectPromoResponseFragments(input, applyButton = null, scope = promoResponseScope(input, applyButton)) {
+    const candidates = []; const add = (element, source, requirePromo = false) => {
+      if (!element || element === input || element === applyButton || !Safety.isVisible(element)) return;
+      const text = safePromoResponseText(element.innerText || element.textContent || element.getAttribute?.('aria-label') || '');
+      if (!text || (requirePromo && !PROMO_WORD.test(text))) return;
+      candidates.push({ text, source });
+    };
+    for (const row of describedResponseNodes(input)) add(row.element, row.source);
+    for (const anchor of [input, applyButton]) {
+      add(anchor?.previousElementSibling, 'PROMO_SIBLING'); add(anchor?.nextElementSibling, 'PROMO_SIBLING');
+      for (const child of Array.from(anchor?.parentElement?.children || []).slice(0, 20)) add(child, 'PROMO_SIBLING');
+    }
+    for (const element of Array.from(scope?.querySelectorAll?.(RESPONSE_HELPER_SELECTOR) || []).slice(0, 80)) add(element, element.getAttribute?.('role') === 'alert' ? 'ROLE_ALERT' : element.hasAttribute?.('aria-live') ? 'ARIA_LIVE' : 'PROMO_HELPER');
+    for (const element of Array.from(document.querySelectorAll('[role="alert"],[aria-live]')).slice(0, 100)) add(element, element.getAttribute?.('role') === 'alert' ? 'ROLE_ALERT' : 'ARIA_LIVE', !isWithin(scope, element));
+    return [...new Map(candidates.map((row) => [`${row.source}|${row.text}`, row])).values()].slice(0, 20);
+  }
+
+  function recordPromoResponseFragment(capture, element, source = 'PROMO_MUTATION') {
+    if (!capture || !element || !Safety.isVisible(element)) return;
+    const text = safePromoResponseText(element.innerText || element.textContent || element.getAttribute?.('aria-label') || '');
+    if (!text || capture.beforeTexts.has(text) || capture.fragments.some((row) => row.text === text)) return;
+    capture.fragments.push({ text, source }); capture.fragments = capture.fragments.slice(0, 5);
+  }
+
+  function updatePromoResponseCapture(capture = activePromoResponseCapture) {
+    if (!capture) return null;
+    for (const row of collectPromoResponseFragments(capture.input, capture.applyButton, capture.scope)) {
+      if (!capture.beforeTexts.has(row.text) && !capture.fragments.some((known) => known.text === row.text)) capture.fragments.push(row);
+    }
+    capture.fragments = capture.fragments.slice(0, 5);
+    const rawInvalid = capture.input?.getAttribute?.('aria-invalid');
+    const inputInvalid = rawInvalid === 'true' ? true : rawInvalid === 'false' ? false : null;
+    const first = capture.fragments[0] || null;
+    return {
+      applyClicked: capture.applyClicked === true,
+      promoMutationSeen: capture.promoMutationSeen === true,
+      inputInvalid,
+      applyButtonFound: !!capture.applyButton,
+      appliedIndicatorFound: false,
+      responseTextFound: !!first,
+      responseSource: first?.source || null,
+      responseSnippet: first?.text || null,
+      elapsedMs: Math.max(0, Date.now() - capture.startedAt)
+    };
+  }
+
+  function startPromoResponseCapture(input, applyButton) {
+    if (activePromoResponseCapture?.observer) activePromoResponseCapture.observer.disconnect();
+    const scope = promoResponseScope(input, applyButton);
+    const beforeTexts = new Set(collectPromoResponseFragments(input, applyButton, scope).map((row) => row.text));
+    const capture = { input, applyButton, scope, beforeTexts, fragments: [], promoMutationSeen: false, applyClicked: false, startedAt: Date.now(), observer: null };
+    if (scope) {
+      capture.observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          const target = mutation.target?.nodeType === 3 ? mutation.target.parentElement : mutation.target;
+          if (!target || !isWithin(scope, target)) continue;
+          capture.promoMutationSeen = true; recordPromoResponseFragment(capture, target);
+          for (const node of Array.from(mutation.addedNodes || []).slice(0, 20)) recordPromoResponseFragment(capture, node.nodeType === 3 ? node.parentElement : node);
+        }
+      });
+      capture.observer.observe(scope, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['aria-invalid', 'aria-describedby', 'aria-errormessage', 'disabled', 'value', 'class'] });
+    }
+    activePromoResponseCapture = capture; return capture;
+  }
+
+  function finishPromoResponseCapture() {
+    const capture = activePromoResponseCapture; if (!capture) return null;
+    const evidence = updatePromoResponseCapture(capture); capture.observer?.disconnect(); activePromoResponseCapture = null; return evidence;
   }
 
   function normalizeCodes(value) {
@@ -758,14 +858,10 @@
   }
 
   function feedbackText(input) {
-    const blocks = []; let node = input?.parentElement;
-    for (let depth = 0; node && depth < 3; depth += 1, node = node.parentElement) {
-      const text = normalize(node.innerText || node.textContent || ''); if (text && text.length <= 700) blocks.push(text);
+    if (activePromoResponseCapture) {
+      const evidence = updatePromoResponseCapture(); return evidence?.responseSnippet || '';
     }
-    for (const element of Array.from(document.querySelectorAll('[role="alert"],[aria-live],[class*="error" i],[class*="success" i],[class*="message" i],[class*="toast" i]')).slice(0, 150)) {
-      if (Safety.isVisible(element)) blocks.push(normalize(element.innerText || element.textContent || ''));
-    }
-    return sanitizeFeedback([...new Set(blocks.filter(Boolean))].join('\n'));
+    return collectPromoResponseFragments(input).map((row) => row.text).slice(0, 5).join('\n');
   }
 
   function appliedIndicator(code, input = findPlatformPromoInput()) {
@@ -823,13 +919,18 @@
     clickApply: async () => {
       const input = findPlatformPromoInput();
       const button = await waitForCondition(() => findApplyButton(input), 2500);
-      if (!button) return { ok: false, message: 'AliExpress не показал безопасную кнопку применения; результат кода не подтверждён' };
-      Safety.safeClick(button, { purpose: 'Применение промокода', intent: 'APPLY_PROMO' }); return { ok: true };
+      const capture = startPromoResponseCapture(input, button);
+      if (!button) return { ok: false, message: 'AliExpress не показал безопасную кнопку применения; результат кода не подтверждён', responseEvidence: updatePromoResponseCapture(capture) };
+      Safety.safeClick(button, { purpose: 'Применение промокода', intent: 'APPLY_PROMO' }); capture.applyClicked = true;
+      return { ok: true, responseEvidence: updatePromoResponseCapture(capture) };
     },
     observe: async (code) => {
       const input = findPlatformPromoInput();
-      return { checkout: readCheckout(), feedbackText: feedbackText(input), appliedEvidence: appliedIndicator(code, input), safetyStatus: safetyStopStatus() };
+      const appliedEvidence = appliedIndicator(code, input); const responseEvidence = updatePromoResponseCapture();
+      if (responseEvidence) responseEvidence.appliedIndicatorFound = appliedEvidence.applied === true;
+      return { checkout: readCheckout(), feedbackText: feedbackText(input), responseEvidence, appliedEvidence, safetyStatus: safetyStopStatus() };
     },
+    finishResponseCapture: async () => finishPromoResponseCapture(),
     waitForSignal: (ms) => waitForDomSignal(ms),
     removeCode: async (code) => {
       const button = findRemoveButton(code); if (!button) return { ok: false, message: 'AliExpress не показал безопасную кнопку удаления применённого промокода' };
@@ -948,6 +1049,7 @@
 
   globalThis.CouponHunterPromoTester = {
     normalizeCodes, normalizeCandidateQueue, inputScore, findPlatformPromoInput, findPlatformPromoRevealControl, ensurePromoInput, scoreApplyControl, scoreRemoveControl, findApplyButton, findRemoveButton,
+    safePromoResponseText, promoResponseScope, collectPromoResponseFragments, startPromoResponseCapture, updatePromoResponseCapture, finishPromoResponseCapture,
     readBreakdown, readCheckout, summaryRows, checkoutItems, selectedShippingMethod, appliedIndicator, existingPlatformCode, selectorDiagnostics, diagnostics,
     checkoutContext, checkoutSurfaceEvidence, effectiveCheckoutBinding, safeWidgetDiagnostics, visibleCheckoutLines,
     refreshRecentProductContext, setRecentProductContext, recentProductContextState, executeCommand,

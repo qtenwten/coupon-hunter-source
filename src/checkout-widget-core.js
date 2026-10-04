@@ -9,7 +9,7 @@
   });
   const ACTIVE_SESSION = new Set(['TESTING']);
   const SAFETY_SESSION = new Set(['SAFETY_STOP', 'BASELINE_LOST', 'CART_CHANGED', 'CHECKOUT_IDENTITY_UNCERTAIN', 'REMOVE_FAILED']);
-  const STOPPED_SESSION = new Set(['CANCELLED', 'STOPPED']);
+  const STOPPED_SESSION = new Set(['CANCELLED', 'STOPPED', 'INCONCLUSIVE_RESPONSE_STREAK']);
   const SUCCESS_STATUS = 'VALID_APPLIED';
 
   const finite = (value) => Number.isFinite(value) ? value : null;
@@ -52,12 +52,50 @@
       INVALID: 'не подходит', EXPIRED: 'истёк', NOT_STARTED: 'ещё не начался', MINIMUM_SPEND_NOT_MET: 'не достигнут минимум',
       NOT_APPLICABLE_TO_ITEMS: 'не подходит к товарам', REGION_RESTRICTED: 'не подходит для региона', ACCOUNT_RESTRICTED: 'ограничение аккаунта',
       ALREADY_USED: 'уже использован', OUT_OF_STOCK: 'лимит исчерпан', NOT_COLLECTED: 'сначала нужно получить',
-      RATE_LIMITED: 'слишком много попыток', CAPTCHA: 'нужна проверка безопасности', UNKNOWN_ERROR: 'результат не определён',
+      RATE_LIMITED: 'слишком много попыток', CAPTCHA: 'нужна проверка безопасности', SITE_REJECTED: 'отклонён AliExpress',
       SKIPPED_CANNOT_BEAT_BEST: 'пропущен: не выгоднее лучшего'
     };
     if (row?.verified && row.verificationStatus === SUCCESS_STATUS && Number(row.saving) > 0 && row.baselineRestored === true) return `экономия ${row.saving}`;
     if (row?.verificationStatus === SUCCESS_STATUS) return 'проверяется возврат исходной суммы';
-    return labels[row?.verificationStatus] || row?.verificationMessage || 'результат не определён';
+    if (row?.verificationStatus === 'UNKNOWN_ERROR') return safeResultText(row?.responseEvidence?.responseSnippet || row?.verificationMessage) || 'результат не определён';
+    return labels[row?.verificationStatus] || safeResultText(row?.verificationMessage) || 'результат не определён';
+  }
+
+  function safeResultText(value) {
+    const text = String(value || '').replace(/[\s\u00A0\u202F]+/g, ' ').trim().slice(0, 200);
+    if (!text || /(?:recipient|получател|delivery\s*address|адрес\s*достав|phone|телефон|e-?mail|payment|оплат|bank\s*card|номер\s*карт|cvv|cvc)/i.test(text)) return null;
+    return text;
+  }
+
+  function safeResponseEvidence(value = {}) {
+    return {
+      applyClicked: value.applyClicked === true,
+      promoMutationSeen: value.promoMutationSeen === true,
+      inputInvalid: typeof value.inputInvalid === 'boolean' ? value.inputInvalid : null,
+      applyButtonFound: value.applyButtonFound === true,
+      appliedIndicatorFound: value.appliedIndicatorFound === true,
+      totalBefore: finite(value.totalBefore), totalAfter: finite(value.totalAfter),
+      totalChanged: value.totalChanged === true,
+      responseTextFound: value.responseTextFound === true && !!safeResultText(value.responseSnippet),
+      responseSource: safeResultText(value.responseSource)?.slice(0, 60) || null,
+      responseSnippet: safeResultText(value.responseSnippet),
+      elapsedMs: Number.isFinite(Number(value.elapsedMs)) ? Math.max(0, Math.round(Number(value.elapsedMs))) : 0
+    };
+  }
+
+  function safeResultsExport(session) {
+    return {
+      status: String(session?.status || 'UNKNOWN').slice(0, 80),
+      stopReason: safeResultText(session?.stopReason),
+      results: (Array.isArray(session?.results) ? session.results : []).filter((row) => !row?.skipped).map((row) => ({
+        code: String(row?.code || '').slice(0, 64),
+        verificationStatus: String(row?.verificationStatus || 'UNKNOWN_ERROR').slice(0, 80),
+        verificationMessage: safeResultText(row?.verificationMessage),
+        saving: finite(row?.saving),
+        baselineRestored: row?.baselineRestored === true,
+        responseEvidence: safeResponseEvidence(row?.responseEvidence)
+      }))
+    };
   }
 
   function safetyMessage(session) {
@@ -98,17 +136,22 @@
       const session = sessionForCurrentContext(); const best = bestResult(session); const state = stateFor(model.context, session, model.error);
       const results = Array.isArray(session?.results) ? session.results : []; const total = session?.codes?.length || model.plan?.queue?.length || 0;
       const progress = Math.min(total, results.length + (session?.current ? 1 : 0));
+      const tested = results.filter((row) => !row?.skipped); const workingCount = tested.filter((row) => row.verified && row.verificationStatus === SUCCESS_STATUS && Number(row.saving) > 0 && row.baselineRestored === true).length;
+      const unknownCount = tested.filter((row) => row.verificationStatus === 'UNKNOWN_ERROR').length;
+      const rejectedCount = tested.filter((row) => row.verified === true && row.verificationStatus !== SUCCESS_STATUS).length;
       const recent = results.slice(-4); if (best && !recent.includes(best)) recent.unshift(best);
+      const canCopyResults = !!session && !ACTIVE_SESSION.has(session.status) && tested.length > 0;
       return {
         state, mode: model.mode, visible: widgetVisible(), available: !!model.context?.available,
         foundCount: model.library.length, applicableCount: model.plan ? model.plan.diagnostics?.eligible ?? 0 : null,
-        queueCount: total, progress, currentCode: session?.current || null,
+        queueCount: total, progress, testedCount: tested.length, workingCount, rejectedCount, unknownCount, currentCode: session?.current || null,
         bestCode: best?.code || null, bestSaving: finite(Number(best?.saving)), currency: best?.priceAfter?.currency || best?.priceBefore?.currency || session?.currency || model.context?.currency || null,
         recentResults: recent.slice(-5).map((row) => ({ code: row.code, tone: resultTone(row), label: resultLabel(row), saving: finite(Number(row.saving)), verificationStatus: row.verificationStatus })),
         sessionStatus: session?.status || null, completed: session?.status === 'COMPLETE', bestApplied: session?.bestApplied === true,
         message: state === STATES.SAFETY_STOP ? safetyMessage(session) : session?.stopReason || model.error || model.context?.reason || null,
         canStart: !!model.context?.available && !ACTIVE_SESSION.has(session?.status) && !!model.plan?.queue?.length,
         canStop: ACTIVE_SESSION.has(session?.status), canApplyBest: session?.status === 'COMPLETE' && !!best?.code && session?.bestApplied !== true,
+        canCopyResults, resultsExport: canCopyResults ? safeResultsExport(session) : null,
         feedStatus: model.feedStatus, diagnostics: model.context?.diagnostics || null
       };
     }
@@ -169,5 +212,5 @@
     return { initialize, refresh, setMode, start, stop, applyBest, restoreSession, view };
   }
 
-  globalThis.CouponHunterCheckoutWidgetCore = { STATES, modeLimit, bestResult, stateFor, resultTone, resultLabel, safetyMessage, createController };
+  globalThis.CouponHunterCheckoutWidgetCore = { STATES, modeLimit, bestResult, stateFor, resultTone, resultLabel, safeResponseEvidence, safeResultsExport, safetyMessage, createController };
 })();

@@ -193,6 +193,59 @@ test('unrelated Applied text is not promo evidence', (t) => {
   t.equal(evidence.applied, false);
 });
 
+function responseSurface({ attribute = null, sourceId = 'promo-response', role = null } = {}) {
+  const attrs = { 'aria-label': 'Promo code' }; if (attribute) attrs[attribute] = sourceId;
+  const input = new FakeElement({ tag: 'input', attrs }); const apply = new FakeElement({ tag: 'button', text: 'Apply' });
+  const response = new FakeElement({ tag: 'div', text: '', attrs: role ? { role } : {}, className: 'promo-helper validation-message' });
+  const container = new FakeElement({ tag: 'section', text: 'Promo code Apply', children: [input, apply, response] });
+  container.querySelectorAll = () => [response]; input.nextElementSibling = response;
+  doc.getElementById = (id) => id === sourceId ? response : null;
+  doc.querySelectorAll = (selector) => selector === '[role="alert"],[aria-live]' && role ? [response] : [];
+  return { input, apply, response, container };
+}
+
+function resetResponseSurface() {
+  T.finishPromoResponseCapture(); delete doc.getElementById; doc.querySelectorAll = () => [];
+}
+
+test('promo-local observer captures newly changed helper text beside promo input', (t) => {
+  const surface = responseSurface(); T.startPromoResponseCapture(surface.input, surface.apply);
+  surface.response.textContent = surface.response.innerText = 'Промокод недоступен для этого заказа';
+  FakeMutationObserver.instances.at(-1).trigger([{ target: surface.response, addedNodes: [], type: 'characterData' }]);
+  const evidence = T.updatePromoResponseCapture();
+  t.equal(evidence.promoMutationSeen, true); t.equal(evidence.responseTextFound, true); t.equal(evidence.responseSnippet, 'Промокод недоступен для этого заказа');
+  resetResponseSurface();
+});
+
+for (const [attribute, source] of [['aria-describedby', 'ARIA_DESCRIBEDBY'], ['aria-errormessage', 'ARIA_ERRORMESSAGE']]) {
+  test(`${attribute} promo response is captured with bounded source`, (t) => {
+    const surface = responseSurface({ attribute }); T.startPromoResponseCapture(surface.input, surface.apply);
+    surface.response.textContent = surface.response.innerText = 'Не удалось применить этот промокод';
+    const evidence = T.updatePromoResponseCapture();
+    t.equal(evidence.responseTextFound, true); t.equal(evidence.responseSource, source); t.equal(evidence.responseSnippet.length <= 200, true);
+    resetResponseSurface();
+  });
+}
+
+test('promo-local role alert is captured', (t) => {
+  const surface = responseSurface({ role: 'alert' }); T.startPromoResponseCapture(surface.input, surface.apply);
+  surface.response.textContent = surface.response.innerText = 'Promo code is invalid';
+  const evidence = T.updatePromoResponseCapture();
+  t.equal(evidence.responseTextFound, true); t.equal(evidence.responseSource, 'PROMO_SIBLING'); t.equal(evidence.responseSnippet, 'Promo code is invalid');
+  resetResponseSurface();
+});
+
+test('unrelated checkout and personal response text are excluded', (t) => {
+  const surface = responseSurface(); const unrelated = new FakeElement({ tag: 'div', text: 'Стоимость доставки обновлена' });
+  const payment = new FakeElement({ tag: 'div', text: 'Ошибка оплаты заказа' });
+  const personal = new FakeElement({ tag: 'div', text: 'Получатель Иван, телефон +7 999 123-45-67, адрес доставки' });
+  doc.querySelectorAll = (selector) => selector === '[role="alert"],[aria-live]' ? [unrelated, payment, personal] : [];
+  T.startPromoResponseCapture(surface.input, surface.apply);
+  t.equal(T.updatePromoResponseCapture().responseTextFound, false);
+  t.equal(T.safePromoResponseText(personal.textContent), null); t.equal(T.safePromoResponseText(payment.textContent), null);
+  resetResponseSurface();
+});
+
 test('checkout reader skips broad div fallback when a specific total source works', (t) => {
   const total = new FakeElement({ text: 'Итого к оплате 9 990 ₽', attrs: { 'data-pl': 'order-total' } });
   const queries = [];

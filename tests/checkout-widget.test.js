@@ -14,6 +14,7 @@ test('checkout widget exposes the explicit Russian start, stop and apply-best co
   const source = fs.readFileSync(`${ROOT}/src/checkout-widget.js`, 'utf8');
   t.match(source, />Подобрать лучший промокод</); t.match(source, />Остановить</); t.match(source, />Применить лучший</);
   t.match(source, /Стандартный — до 30/); t.match(source, /Глубокий — до 50/);
+  t.match(source, />Скопировать результаты</); t.match(source, /Проверено:/);
 });
 
 test('unavailable checkout context does not remove a detected checkout widget', (t) => {
@@ -133,6 +134,35 @@ test('temporary applied result is not BEST until baseline restoration is confirm
   const session = { status: 'TESTING', codes: ['CODE1'], results: [{ code: 'CODE1', verified: true, verificationStatus: 'VALID_APPLIED', saving: 1200 }] };
   t.equal(Core.bestResult(session), null);
   session.results[0].baselineRestored = true; t.equal(Core.bestResult(session).code, 'CODE1');
+});
+
+test('UNKNOWN result displays a safe verification message or promo response snippet', async (t) => {
+  const session = { status: 'COMPLETE', codes: ['DELD06'], results: [{ code: 'DELD06', verified: false, verificationStatus: 'UNKNOWN_ERROR', verificationMessage: 'ответ сайта не распознан', responseEvidence: { responseSnippet: 'Промокод временно недоступен' } }] };
+  const view = await createHarness({ session }).controller.initialize();
+  t.equal(view.recentResults[0].tone, 'unknown'); t.equal(view.recentResults[0].label, 'Промокод временно недоступен');
+  t.equal(view.unknownCount, 1); t.equal(view.testedCount, 1);
+});
+
+test('inconclusive streak renders stopped counters and copyable safe results', async (t) => {
+  const session = {
+    status: 'INCONCLUSIVE_RESPONSE_STREAK', stopReason: 'Остановлено: 3 неопределённых ответа подряд', codes: ['A1', 'A2', 'A3', 'A4'],
+    results: [
+      { code: 'A1', verificationStatus: 'UNKNOWN_ERROR', verificationMessage: 'Нет ответа', saving: 0, privateName: 'Иван', itemId: 'SECRET-ITEM', responseEvidence: { applyClicked: true, responseSnippet: 'Нет ответа', hiddenAddress: 'secret' } },
+      { code: 'A2', verificationStatus: 'INVALID', verificationMessage: 'Promo code is invalid', verified: true, saving: 0 },
+      { code: 'A3', verificationStatus: 'VALID_APPLIED', verificationMessage: 'applied', verified: true, saving: 100, baselineRestored: true }
+    ]
+  };
+  const view = await createHarness({ session }).controller.initialize();
+  t.equal(view.state, 'STOPPED'); t.equal(view.testedCount, 3); t.equal(view.workingCount, 1); t.equal(view.rejectedCount, 1); t.equal(view.unknownCount, 1);
+  t.equal(view.canCopyResults, true); t.equal(view.resultsExport.status, 'INCONCLUSIVE_RESPONSE_STREAK');
+  const json = JSON.stringify(view.resultsExport); t.ok(!json.includes('SECRET-ITEM')); t.ok(!json.includes('privateName')); t.ok(!json.includes('hiddenAddress'));
+  t.deep(Object.keys(view.resultsExport.results[0]), ['code', 'verificationStatus', 'verificationMessage', 'saving', 'baselineRestored', 'responseEvidence']);
+});
+
+test('copy-results sanitizer excludes personal promo-response text', (t) => {
+  const payload = Core.safeResultsExport({ status: 'COMPLETE', stopReason: null, results: [{ code: 'A1', verificationStatus: 'UNKNOWN_ERROR', verificationMessage: 'Получатель Иван, телефон +7 999 123-45-67', responseEvidence: { responseSnippet: 'Адрес доставки: Москва', responseSource: 'ROLE_ALERT' } }] });
+  t.equal(payload.results[0].verificationMessage, null); t.equal(payload.results[0].responseEvidence.responseSnippet, null);
+  t.equal(payload.results[0].responseEvidence.responseTextFound, false);
 });
 
 test('BEST is applied only by explicit applyBest action', async (t) => {

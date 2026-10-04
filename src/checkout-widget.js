@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__COUPON_HUNTER_CHECKOUT_WIDGET_V334__) return;
-  window.__COUPON_HUNTER_CHECKOUT_WIDGET_V334__ = true;
+  if (window.__COUPON_HUNTER_CHECKOUT_WIDGET_V335__) return;
+  window.__COUPON_HUNTER_CHECKOUT_WIDGET_V335__ = true;
 
   const Core = globalThis.CouponHunterCheckoutWidgetCore;
   const Checkout = globalThis.CouponHunterCheckoutCore;
@@ -60,11 +60,12 @@
         </div>
         <div class="ch-progress" data-ch="progress" hidden>
           <div class="ch-progress-title" data-ch="progress-title">Проверяем промокоды</div>
-          <div><b data-ch="progress-count">0 из 0</b><span data-ch="current"></span></div>
+          <div><b data-ch="progress-count">Проверено: 0 из 0</b><span data-ch="current"></span></div>
+          <div class="ch-promo-stats"><span>Рабочих: <b data-ch="working-count">0</b></span><span>Отклонено: <b data-ch="rejected-count">0</b></span><span>Не определено: <b data-ch="unknown-count">0</b></span></div>
         </div>
         <div class="ch-best" data-ch="best" hidden><span data-ch="best-label">Лучший сейчас</span><b data-ch="best-code">—</b><strong data-ch="best-saving">—</strong></div>
         <div class="ch-results" data-ch="results"></div>
-        <div class="ch-actions ch-checkout-actions"><button class="ch-secondary" data-ch="stop" type="button" hidden>Остановить</button><button data-ch="apply-best" type="button" hidden>Применить лучший</button></div>
+        <div class="ch-actions ch-checkout-actions"><button class="ch-secondary" data-ch="stop" type="button" hidden>Остановить</button><button class="ch-secondary" data-ch="copy-results" type="button" hidden>Скопировать результаты</button><button data-ch="apply-best" type="button" hidden>Применить лучший</button></div>
       </div>`;
     document.documentElement.appendChild(root);
     root.querySelector('[data-ch="toggle"]').addEventListener('click', () => {
@@ -83,6 +84,12 @@
       catch (_) { actionMessage = 'Не удалось скопировать диагностику.'; }
       render(controller.view());
     });
+    root.querySelector('[data-ch="copy-results"]').addEventListener('click', async () => {
+      const payload = controller.view().resultsExport; if (!payload) return;
+      try { await navigator.clipboard.writeText(JSON.stringify(payload, null, 2)); actionMessage = 'Безопасные результаты проверки скопированы.'; }
+      catch (_) { actionMessage = 'Не удалось скопировать результаты.'; }
+      render(controller.view());
+    });
     for (const input of root.querySelectorAll('input[name="ch-mode"]')) input.addEventListener('change', () => { if (input.checked) controller.setMode(input.value); });
     return root;
   }
@@ -98,6 +105,7 @@
     if ([Core.STATES.TESTING, Core.STATES.FOUND_BEST].includes(view.state) && view.sessionStatus === 'TESTING') return '● проверка идёт';
     if (view.state === Core.STATES.FOUND_BEST) return '● лучший найден';
     if (view.state === Core.STATES.COMPLETE_NO_SAVING) return 'проверка завершена';
+    if (view.state === Core.STATES.STOPPED) return '● остановлено';
     if ([Core.STATES.SAFETY_STOP, Core.STATES.ERROR].includes(view.state)) return '● остановлено';
     return 'ожидание checkout';
   }
@@ -137,9 +145,10 @@
     setText(panel, 'diag-fingerprint', fingerprint.quality || 'WEAK'); setText(panel, 'diag-items', items.count || 0);
     setText(panel, 'diag-item-ids', items.itemIdDetected || 0); setText(panel, 'diag-sku-ids', items.skuIdDetected || 0);
     setText(panel, 'diag-promo', selectors.inputFound || selectors.revealFound ? 'FOUND' : 'NOT FOUND');
-    const active = view.sessionStatus === 'TESTING'; const progress = panel.querySelector('[data-ch="progress"]'); progress.hidden = !active;
-    setText(panel, 'progress-title', view.bestCode ? 'Проверяем промокоды · лучший уже найден' : 'Проверяем промокоды');
-    setText(panel, 'progress-count', `${view.progress} из ${view.queueCount}`); setText(panel, 'current', view.currentCode ? ` · ${view.currentCode}` : '');
+    const active = view.sessionStatus === 'TESTING'; const progress = panel.querySelector('[data-ch="progress"]'); progress.hidden = !active && !view.testedCount;
+    setText(panel, 'progress-title', active ? (view.bestCode ? 'Проверяем промокоды · лучший уже найден' : 'Проверяем промокоды') : view.completed ? 'Результаты проверки' : 'Проверка остановлена');
+    setText(panel, 'progress-count', `Проверено: ${view.testedCount} из ${view.queueCount}`); setText(panel, 'current', view.currentCode ? ` · сейчас ${view.currentCode}` : '');
+    setText(panel, 'working-count', view.workingCount); setText(panel, 'rejected-count', view.rejectedCount); setText(panel, 'unknown-count', view.unknownCount);
     const best = panel.querySelector('[data-ch="best"]'); best.hidden = !view.bestCode;
     setText(panel, 'best-label', view.completed ? 'Лучший промокод' : 'Лучший сейчас');
     setText(panel, 'best-code', view.bestCode || '—'); setText(panel, 'best-saving', view.bestCode ? `−${money(view.bestSaving, view.currency)}` : '—');
@@ -147,6 +156,7 @@
     panel.querySelector('[data-ch="modes"]').hidden = active;
     for (const input of panel.querySelectorAll('input[name="ch-mode"]')) { input.checked = input.value === view.mode; input.disabled = active; }
     const stop = panel.querySelector('[data-ch="stop"]'); stop.hidden = !view.canStop;
+    const copyResults = panel.querySelector('[data-ch="copy-results"]'); copyResults.hidden = !view.canCopyResults;
     const apply = panel.querySelector('[data-ch="apply-best"]'); apply.hidden = !view.canApplyBest;
     renderResults(panel, view);
   }

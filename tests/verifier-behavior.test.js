@@ -10,7 +10,7 @@ class FakeCheckoutEnvironment {
     this.time = 1_700_000_000_000; this.behaviors = behaviors; this.options = options;
     this.baselineFinancial = { subtotal: 9990, shipping: 0, tax: 0, discount: 0, total: 9990, currency: 'RUB', ...(options.financial || {}) };
     this.financial = { ...this.baselineFinancial }; this.feedback = ''; this.safety = null;
-    this.applied = false; this.currentCode = null; this.events = []; this.actions = []; this.sessions = [];
+    this.applied = false; this.currentCode = null; this.events = []; this.actions = []; this.sessions = []; this.responseEvidence = null;
     this.items = options.items || [{ itemId: 'ITEM-A', skuId: 'SKU-A', quantity: 1, sellerId: 'STORE-A' }];
     this.shippingMethodId = options.shippingMethodId || 'STANDARD';
     this.origin = options.origin || 'https://aliexpress.ru'; this.pageClass = options.pageClass || 'CHECKOUT'; this.pathClass = options.pathClass || '/p/trade/confirm.html';
@@ -27,7 +27,11 @@ class FakeCheckoutEnvironment {
     for (const event of due) {
       for (const key of ['subtotal', 'shipping', 'tax', 'discount', 'total', 'currency']) if (key in event) this.financial[key] = event[key];
       if (event.financial) Object.assign(this.financial, event.financial);
-      if ('feedback' in event) this.feedback = event.feedback;
+      if ('feedback' in event) {
+        this.feedback = event.feedback;
+        this.responseEvidence = event.feedback ? { applyClicked: true, promoMutationSeen: true, inputInvalid: null, applyButtonFound: true, responseTextFound: true, responseSource: 'TEST_PROMO_LOCAL', responseSnippet: event.feedback, elapsedMs: Math.max(0, this.time - (this.applyStartedAt || this.time)) } : null;
+      }
+      if (event.responseEvidence) this.responseEvidence = { ...event.responseEvidence };
       if ('applied' in event) this.applied = event.applied;
       if ('safety' in event) this.safety = event.safety;
       if (event.items) this.items = event.items;
@@ -43,20 +47,21 @@ class FakeCheckoutEnvironment {
       ensureReady: async () => ({ ok: true }), existingCode: async () => null,
       readCheckout: async () => { this.applyDue(); return this.checkout(); },
       readStableCheckout: async () => { this.applyDue(); return this.checkout(); },
-      enterCode: async (code) => { this.currentCode = code; this.feedback = ''; this.applied = !!this.behaviors[code]?.staleApplied; this.actions.push(`enter:${code}`); return { ok: true }; },
+      enterCode: async (code) => { this.currentCode = code; this.feedback = ''; this.responseEvidence = null; this.applied = !!this.behaviors[code]?.staleApplied; this.actions.push(`enter:${code}`); return { ok: true }; },
       clickApply: async (code) => {
-        this.actions.push(`apply:${code}`); const behavior = this.behaviors[code] || {};
+        this.actions.push(`apply:${code}`); this.applyStartedAt = this.time; const behavior = this.behaviors[code] || {};
         for (const event of behavior.events || []) this.events.push({ ...event, at: this.time + (event.delay || 0) });
-        return behavior.applyFailure ? { ok: false, message: 'Apply missing' } : { ok: true };
+        return behavior.applyFailure ? { ok: false, message: 'Apply missing', responseEvidence: { applyClicked: false, applyButtonFound: false } } : { ok: true, responseEvidence: { applyClicked: true, applyButtonFound: true } };
       },
       observe: async (code) => {
         this.applyDue();
         return {
-          checkout: this.checkout(), feedbackText: this.feedback, safetyStatus: this.safety,
+          checkout: this.checkout(), feedbackText: this.feedback, responseEvidence: this.responseEvidence, safetyStatus: this.safety,
           appliedEvidence: this.applied ? { applied: true, confidence: 85, evidenceType: 'PROMO_SUCCESS_TEXT', snippet: { text: 'Promo code applied' } } : { applied: false, confidence: 0, evidenceType: null, snippet: null },
           code
         };
       },
+      finishResponseCapture: async () => this.responseEvidence,
       waitForSignal: async (ms) => {
         const next = this.events.map((event) => event.at).filter((at) => at > this.time && at <= this.time + ms).sort((a, b) => a - b)[0];
         this.time = next || this.time + ms; this.applyDue();
@@ -95,9 +100,40 @@ test('PromoTester CASE A: valid code is measured, removed and baseline restored 
   t.equal(session.origin, 'https://aliexpress.ru'); t.equal(session.pageClass, 'CHECKOUT'); t.equal(session.pathClass, '/p/trade/confirm.html');
   t.equal(session.currency, 'RUB'); t.equal(session.baseline.total, 9990); t.ok(!!session.checkoutFingerprint.signature); t.ok(!!session.createdAt);
   t.equal(session.results[0].saving, 1200); t.equal(session.results[0].baselineRestored, true);
+  t.deep(Object.keys(session.results[0].responseEvidence), ['applyClicked', 'promoMutationSeen', 'inputInvalid', 'applyButtonFound', 'appliedIndicatorFound', 'totalBefore', 'totalAfter', 'totalChanged', 'responseTextFound', 'responseSource', 'responseSnippet', 'elapsedMs']);
+  t.equal(session.results[0].responseEvidence.applyClicked, true); t.equal(session.results[0].responseEvidence.appliedIndicatorFound, true);
+  t.equal(session.results[0].responseEvidence.totalBefore, 9990); t.equal(session.results[0].responseEvidence.totalAfter, 8790); t.equal(session.results[0].responseEvidence.totalChanged, true);
   t.deep(session.results[0].transitions.map((row) => row.state), ['IDLE','ENTERING','APPLYING','WAITING_RESPONSE','APPLIED','REMOVING','RESTORING_BASELINE']);
   t.ok(env.actions.indexOf('restored:CODE1') < env.actions.indexOf('enter:CODE2'));
   t.equal(session.results[1].verificationStatus, C.STATUS.MINIMUM_SPEND_NOT_MET);
+});
+
+test('three consecutive UNKNOWN responses stop the queue automatically', async (t) => {
+  const env = new FakeCheckoutEnvironment({ U1: {}, U2: {}, U3: {}, U4: { events: [{ feedback: 'invalid' }] } });
+  const session = await verifierFor(env, { verificationTimeoutMs: 750, quietWindowMs: 100 }).run(['U1', 'U2', 'U3', 'U4']);
+  t.equal(session.status, 'INCONCLUSIVE_RESPONSE_STREAK'); t.equal(session.consecutiveUnknowns, 3);
+  t.equal(session.results.length, 3); t.ok(!env.actions.includes('enter:U4')); t.match(session.stopReason, /3 неопределённых ответа подряд/);
+});
+
+test('UNKNOWN, INVALID, UNKNOWN, UNKNOWN leaves streak at two', async (t) => {
+  const env = new FakeCheckoutEnvironment({ U1: {}, BAD: { events: [{ feedback: 'This promo code is invalid' }] }, U2: {}, U3: {} });
+  const session = await verifierFor(env, { verificationTimeoutMs: 750, quietWindowMs: 100 }).run(['U1', 'BAD', 'U2', 'U3']);
+  t.equal(session.status, 'COMPLETE'); t.equal(session.consecutiveUnknowns, 2);
+  t.deep(session.results.map((row) => row.verificationStatus), [C.STATUS.UNKNOWN_ERROR, C.STATUS.INVALID, C.STATUS.UNKNOWN_ERROR, C.STATUS.UNKNOWN_ERROR]);
+});
+
+test('explicit INVALID resets an existing unknown streak', async (t) => {
+  const env = new FakeCheckoutEnvironment({ U1: {}, U2: {}, BAD: { events: [{ feedback: 'Promo code is invalid' }] }, U3: {}, U4: {}, U5: {} });
+  const session = await verifierFor(env, { verificationTimeoutMs: 750, quietWindowMs: 100 }).run(['U1', 'U2', 'BAD', 'U3', 'U4', 'U5']);
+  t.equal(session.status, 'INCONCLUSIVE_RESPONSE_STREAK'); t.equal(session.results.length, 6); t.ok(env.actions.includes('enter:U5'));
+  t.equal(session.results[2].verificationStatus, C.STATUS.INVALID);
+});
+
+test('VALID_APPLIED resets an existing unknown streak', async (t) => {
+  const env = new FakeCheckoutEnvironment({ U1: {}, U2: {}, GOOD: { events: [{ applied: true, total: 8790 }] }, U3: {}, U4: {} });
+  const session = await verifierFor(env, { verificationTimeoutMs: 750, quietWindowMs: 100 }).run(['U1', 'U2', 'GOOD', 'U3', 'U4']);
+  t.equal(session.status, 'COMPLETE'); t.equal(session.consecutiveUnknowns, 2); t.equal(session.results[2].verificationStatus, C.STATUS.VALID_APPLIED);
+  t.ok(env.actions.includes('remove:GOOD')); t.ok(env.actions.includes('enter:U4'));
 });
 
 test('PromoTester CASE B: rejected promo keeps baseline and queue continues', async (t) => {
@@ -109,6 +145,28 @@ test('PromoTester CASE B: rejected promo keeps baseline and queue continues', as
   t.equal(session.status, 'COMPLETE'); t.equal(session.results[0].verificationStatus, C.STATUS.MINIMUM_SPEND_NOT_MET);
   t.equal(session.results[0].priceAfter.total, 9990); t.ok(env.actions.includes('enter:CODE2'));
   t.ok(!env.actions.includes('remove:CODE1'));
+});
+
+test('promo-local explicit rejection is classified and preserved as safe response evidence', async (t) => {
+  const env = new FakeCheckoutEnvironment({ ORDER: { events: [{ feedback: 'Промокод недоступен для этого заказа' }] }, GENERIC: { events: [{ feedback: 'Не удалось применить этот промокод' }] } });
+  const session = await verifierFor(env).run(['ORDER', 'GENERIC']);
+  t.equal(session.results[0].verificationStatus, C.STATUS.NOT_APPLICABLE_TO_ITEMS); t.equal(session.results[0].verified, true);
+  t.equal(session.results[1].verificationStatus, C.STATUS.SITE_REJECTED); t.equal(session.results[1].verified, true);
+  t.equal(session.results[1].responseEvidence.promoMutationSeen, true); t.equal(session.results[1].responseEvidence.responseSource, 'TEST_PROMO_LOCAL');
+  t.equal(session.results[1].responseEvidence.responseSnippet, 'Не удалось применить этот промокод');
+});
+
+test('no response and unchanged total stays UNKNOWN with explicit evidence diagnostics', async (t) => {
+  const env = new FakeCheckoutEnvironment({ SILENT: {} });
+  const session = await verifierFor(env, { verificationTimeoutMs: 750, quietWindowMs: 100 }).run(['SILENT']); const result = session.results[0];
+  t.equal(result.verificationStatus, C.STATUS.UNKNOWN_ERROR); t.equal(result.verified, false); t.match(result.verificationMessage, /не показал распознаваемый ответ/);
+  t.equal(result.responseEvidence.applyClicked, true); t.equal(result.responseEvidence.responseTextFound, false); t.equal(result.responseEvidence.totalChanged, false);
+});
+
+test('total decrease without applied evidence remains UNKNOWN', async (t) => {
+  const env = new FakeCheckoutEnvironment({ CHANGE: { events: [{ total: 8790, name: 'total-only' }], clearEvents: [{ delay: 0, total: 9990 }] } });
+  const session = await verifierFor(env, { verificationTimeoutMs: 750, quietWindowMs: 100 }).run(['CHANGE']); const result = session.results[0];
+  t.equal(result.verificationStatus, C.STATUS.UNKNOWN_ERROR); t.equal(result.verified, false); t.equal(result.responseEvidence.totalChanged, true);
 });
 
 test('PromoTester CASE C: early Applied waits for delayed total recalculation', async (t) => {
