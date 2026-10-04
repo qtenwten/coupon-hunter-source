@@ -64,6 +64,12 @@ test('checkout fingerprint distinguishes different items with the same total', (
   t.equal(C.sameCheckoutFingerprint(first, second), false); t.ok(first.signature !== second.signature);
 });
 
+test('checkout binding supports modern confirm routes but not arbitrary order pages', (t) => {
+  t.equal(C.checkoutBinding('https://aliexpress.ru/p/checkout/index.html').pageClass, 'CHECKOUT');
+  t.equal(C.checkoutBinding('https://aliexpress.ru/p/trade/order/confirm.html').pageClass, 'CHECKOUT');
+  t.equal(C.checkoutBinding('https://aliexpress.ru/p/order/history.html').pageClass, 'OTHER');
+});
+
 test('checkout fingerprint is deterministic regardless of item DOM order', (t) => {
   const data = { currency: 'RUB', subtotal: 5000, shipping: 0, tax: 0, shippingMethodId: 'courier-id' };
   const a = C.buildCheckoutFingerprint({ ...data, items: [{ itemId: '2', skuId: 'B', quantity: 2 }, { itemId: '1', skuId: 'A', quantity: 1 }] });

@@ -1,6 +1,14 @@
-# Coupon Hunter v3.3.0
+# Coupon Hunter v3.3.1
 
 Локальное расширение Manifest V3 для Chrome desktop и Яндекс Браузера на Chromium. Оно анализирует страницы AliExpress, хранит данные в `chrome.storage.local` и проверяет только явно найденные или введённые промокоды. Случайные коды не генерируются, brute force не выполняется.
+
+## Что исправлено в v3.3.1
+
+- Видимость checkout widget отделена от разрешения verifier: на checkout-like поверхности панель остаётся видимой при `WEAK` fingerprint, показывает причину блокировки и держит запуск disabled.
+- Checkout определяется по консервативной комбинации URL, заголовка, promo control, order total, checkout markers и read-only признака кнопки оформления.
+- Item identity дополнена явными item links, стабильными DOM attributes и data-only JSON, связанным с видимым item ID. Случайные числа, title и image identity не создают.
+- В панели появился безопасный JSON diagnostics без query, адреса, имени, телефона, account identifiers, cookies и содержимого форм.
+- Добавлен обезличенный RU checkout fixture с итогом `8 923 ₽` и regression для современных checkout routes.
 
 ## Что добавлено в v3.3.0
 

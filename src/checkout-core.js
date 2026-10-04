@@ -130,7 +130,9 @@
   function checkoutBinding(urlString, pageType = null) {
     try {
       const url = new URL(urlString);
-      const pathClass = String(pageType || '').toUpperCase() || (/trade\/confirm|checkout|order\/confirm/i.test(url.pathname) ? 'CHECKOUT' : /shoppingcart|\/cart/i.test(url.pathname) ? 'CART' : 'OTHER');
+      const checkoutRoute = /(?:^|\/)checkout(?:\/|$)|\/trade\/(?:order\/)?confirm(?:\.html)?(?:\/|$)|\/order\/confirm(?:ation)?(?:\.html)?(?:\/|$)|\/order\/create(?:\.html)?(?:\/|$)/i;
+      const cartRoute = /(?:^|\/)(?:shoppingcart|cart)(?:\/|\.html|$)/i;
+      const pathClass = String(pageType || '').toUpperCase() || (checkoutRoute.test(url.pathname) ? 'CHECKOUT' : cartRoute.test(url.pathname) ? 'CART' : 'OTHER');
       const normalizedPath = url.pathname.toLowerCase().replace(/[0-9a-f]{8,}/gi, ':id').replace(/\/+/g, '/').replace(/\/$/, '') || '/';
       return { origin: url.origin, pageClass: pathClass, pathClass: normalizedPath };
     } catch (_) { return { origin: null, pageClass: pageType || null, pathClass: null }; }

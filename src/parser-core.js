@@ -1,8 +1,8 @@
 (() => {
   'use strict';
-  if (globalThis.CouponHunterParser?.parserVersion === '3.3.0') return;
+  if (globalThis.CouponHunterParser?.parserVersion === '3.3.1') return;
 
-  const PARSER_VERSION = '3.3.0';
+  const PARSER_VERSION = '3.3.1';
   const PROMOTION_TYPES = Object.freeze({
     PLATFORM_PROMO_CODE: 'PLATFORM_PROMO_CODE', ALIEXPRESS_COUPON: 'ALIEXPRESS_COUPON',
     SELLER_COUPON: 'SELLER_COUPON', STORE_DISCOUNT: 'STORE_DISCOUNT', SELECT_COUPON: 'SELECT_COUPON',
@@ -468,7 +468,10 @@
     try {
       const path = new URL(urlString).pathname.toLowerCase();
       if (/\/item\//.test(path)) return 'PRODUCT';
-      if (/(shoppingcart|\/cart|trade\/confirm|checkout|order\/confirm)/.test(path)) return /trade\/confirm|checkout|order\/confirm/.test(path) ? 'CHECKOUT' : 'CART';
+      const checkoutRoute = /(?:^|\/)checkout(?:\/|$)|\/trade\/(?:order\/)?confirm(?:\.html)?(?:\/|$)|\/order\/confirm(?:ation)?(?:\.html)?(?:\/|$)|\/order\/create(?:\.html)?(?:\/|$)/;
+      const cartRoute = /(?:^|\/)(?:shoppingcart|cart)(?:\/|\.html|$)/;
+      if (checkoutRoute.test(path)) return 'CHECKOUT';
+      if (cartRoute.test(path)) return 'CART';
       if (/(wholesale|search)/.test(path)) return 'SEARCH';
     } catch (_) {}
     return 'ALIEXPRESS_OTHER';

@@ -1,5 +1,5 @@
 const { test } = require('./harness');
-const { FakeElement, FakeMutationObserver, sandbox, load } = require('./helpers');
+const { FakeElement, FakeMutationObserver, sandbox, load, fixture } = require('./helpers');
 
 const chrome = { runtime: { onMessage: { addListener() {} } }, storage: { local: { async get() { return {}; }, async set() {} } } };
 const doc = { documentElement: { lang: 'ru' }, body: { innerText: '' }, querySelectorAll() { return []; }, querySelector() { return null; } };
@@ -8,6 +8,26 @@ const box = load(
   'src/parser-core.js', 'src/checkout-core.js', 'src/verifier-engine.js', 'src/safety.js', 'src/storage.js', 'src/promo-tester.js'
 );
 const T = box.CouponHunterPromoTester;
+
+function checkoutFixtureDocument(data, { withIdentity = true } = {}) {
+  const heading = new FakeElement({ tag: 'h1', text: data.heading });
+  const promo = new FakeElement({ tag: 'button', text: data.promoControl });
+  const order = new FakeElement({ tag: 'button', text: data.orderAction });
+  const total = new FakeElement({ text: data.summary, attrs: { 'data-pl': 'order-total' } });
+  const decoys = (data.decoys || []).map((text) => new FakeElement({ text }));
+  const link = new FakeElement({ tag: 'a', attrs: { href: data.itemHref } });
+  const script = new FakeElement({ tag: 'script', text: JSON.stringify(data.structuredState), attrs: { type: 'application/json' } });
+  const querySelectorAll = (selector) => {
+    if (selector === 'h1,h2,[role="heading"],[aria-level]') return [heading];
+    if (selector === 'button,[role="button"],summary' || selector === 'button,[role="button"],input[type="submit"]') return [promo, order];
+    if (selector.startsWith('[data-pl*="total"')) return [total];
+    if (selector === 'div,li,p') return decoys;
+    if (selector.startsWith('a[href*="/item/"')) return withIdentity ? [link] : [];
+    if (selector.startsWith('script[type="application/json"')) return withIdentity ? [script] : [];
+    return [];
+  };
+  return { heading, promo, order, total, decoys, link, script, querySelectorAll };
+}
 
 function scopedControl(label, context = 'Promo code') {
   const input = new FakeElement({ tag: 'input', attrs: { 'aria-label': 'Promo code' } });
@@ -131,6 +151,59 @@ test('checkout context is available with reliable cart identity while promo inpu
   t.equal(context.available, true); t.equal(context.pageType, 'CHECKOUT'); t.equal(context.fingerprintQuality, 'MEDIUM');
   t.deep(context.itemIds, ['12345']); t.equal(context.total, 9990);
   doc.querySelectorAll = () => [];
+});
+
+test('live-like RU checkout heading, promo control and total are recognized as checkout surface', (t) => {
+  const data = fixture('aliexpress-ru-checkout.json'); const page = checkoutFixtureDocument(data, { withIdentity: false });
+  const previousUrl = box.location.href; box.location.href = 'https://aliexpress.ru/p/trade/review-new.html'; doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext();
+  t.equal(context.pageType, 'ALIEXPRESS_OTHER'); t.equal(context.checkoutSurfaceDetected, true); t.equal(context.available, false);
+  t.ok(context.checkoutSurfaceSignals.includes('CHECKOUT_HEADING')); t.ok(context.checkoutSurfaceSignals.includes('PROMO_CONTROL')); t.ok(context.checkoutSurfaceSignals.includes('ORDER_TOTAL'));
+  t.equal(page.order.clicked || 0, 0, 'Оформить заказ is read-only evidence');
+  doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('live-like RU checkout parses visible 8 923 RUB total and structured item identity', (t) => {
+  const data = fixture('aliexpress-ru-checkout.json'); const page = checkoutFixtureDocument(data);
+  const previousUrl = box.location.href; box.location.href = data.url; doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext();
+  t.equal(context.pageType, data.expected.pageType); t.equal(context.total, data.expected.total); t.equal(context.currency, data.expected.currency);
+  t.equal(context.fingerprintQuality, 'STRONG'); t.deep(context.itemIds, [data.expected.itemId]); t.equal(context.checkoutFingerprint.items[0].skuId, data.expected.skuId);
+  t.equal(context.available, true);
+  doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('conflicting structured variants never invent a selected checkout SKU', (t) => {
+  const source = fixture('aliexpress-ru-checkout.json');
+  const data = { ...source, structuredState: { checkoutItems: [
+    { itemId: source.expected.itemId, skuId: 'SKU-A', quantity: 1 },
+    { itemId: source.expected.itemId, skuId: 'SKU-B', quantity: 1 }
+  ] } };
+  const page = checkoutFixtureDocument(data); const previousUrl = box.location.href;
+  box.location.href = 'https://aliexpress.ru/p/checkout/index.html'; doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext();
+  t.equal(context.checkoutFingerprint.items[0].skuId, null); t.equal(context.fingerprintQuality, 'MEDIUM');
+  doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('copied widget diagnostics exclude query secrets and personal checkout data', (t) => {
+  const data = fixture('aliexpress-ru-checkout.json'); const page = checkoutFixtureDocument(data);
+  const previousUrl = box.location.href; const previousBody = doc.body; box.location.href = data.url;
+  doc.body = { innerText: 'Иван Иванов +7 999 123-45-67 private@example.com ул. Секретная 1', textContent: 'Иван Иванов +7 999 123-45-67 private@example.com ул. Секретная 1' };
+  doc.querySelectorAll = page.querySelectorAll;
+  const serialized = JSON.stringify(T.checkoutContext().diagnostics);
+  t.ok(!serialized.includes('checkoutToken')); t.ok(!serialized.includes('redacted')); t.ok(!serialized.includes('Иван Иванов'));
+  t.ok(!serialized.includes('private@example.com')); t.ok(!serialized.includes('+7 999')); t.match(serialized, /"pathname":"\/p\/order\/confirm\.html"/);
+  doc.querySelectorAll = () => []; doc.body = previousBody; box.location.href = previousUrl;
+});
+
+test('non-checkout page with only a promo control is not a checkout surface', (t) => {
+  const promo = new FakeElement({ tag: 'button', text: 'Ввести промокод' }); const previousUrl = box.location.href;
+  box.location.href = 'https://aliexpress.ru/item/1005001234567890.html';
+  doc.querySelectorAll = (selector) => selector === 'button,[role="button"],summary' || selector === 'button,[role="button"],input[type="submit"]' ? [promo] : [];
+  const context = T.checkoutContext();
+  t.equal(context.pageType, 'PRODUCT'); t.equal(context.checkoutSurfaceDetected, false); t.equal(context.available, false);
+  doc.querySelectorAll = () => []; box.location.href = previousUrl;
 });
 
 test('existing platform code ignores generic promo state words', (t) => {

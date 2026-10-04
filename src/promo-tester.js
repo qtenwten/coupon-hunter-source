@@ -197,16 +197,128 @@
     return null;
   }
 
+  function itemIdFromLink(link) {
+    const href = String(link?.href || link?.getAttribute?.('href') || '');
+    if (!href) return null;
+    const pathMatch = href.match(/\/item\/(\d{6,})(?:\.html)?/i); if (pathMatch) return pathMatch[1];
+    try {
+      const url = new URL(href, location.href);
+      const value = url.searchParams.get('itemId') || url.searchParams.get('productId');
+      return /^\d{6,}$/.test(value || '') ? value : null;
+    } catch (_) { return null; }
+  }
+
+  function isRecommendationLink(link) {
+    let node = link;
+    for (let depth = 0; node && depth < 7; depth += 1, node = node.parentElement) {
+      const signature = normalize([node.id, node.className, node.getAttribute?.('data-testid'), node.getAttribute?.('data-pl')].filter(Boolean).join(' '));
+      if (/(recommend|suggest|similar|you.?may.?like|also.?like|рекоменд|похож)/i.test(signature)) return true;
+    }
+    return false;
+  }
+
+  function visibleItemLinks() {
+    return Array.from(document.querySelectorAll('a[href*="/item/"],a[href*="itemId="],a[href*="productId="]')).slice(0, 500)
+      .filter((link) => Safety.isVisible(link) && !isRecommendationLink(link) && !!itemIdFromLink(link));
+  }
+
+  function itemRootForLink(link) {
+    let node = link;
+    for (let depth = 0; node && depth < 7; depth += 1, node = node.parentElement) {
+      const signature = normalize([node.id, node.className, node.getAttribute?.('data-testid'), node.getAttribute?.('data-pl')].filter(Boolean).join(' '));
+      if (/(?:^|[-_\s])(cart|order|checkout|line|product|sku)[-_\s]?(?:item|info|content|row)?(?:$|[-_\s])/i.test(signature) || attributeFrom(node, ['data-item-id', 'data-itemid', 'data-product-id', 'data-productid'])) return node;
+    }
+    return link;
+  }
+
+  function checkoutIdentityScopePresent() {
+    if (['CART', 'CHECKOUT'].includes(P.parsePageType(location.href))) return true;
+    const marker = document.querySelector('[data-testid*="checkout" i],[data-pl*="checkout" i],[data-testid*="order-confirm" i],[data-pl*="order-confirm" i],[id*="checkout" i],[class*="checkout-page" i],[class*="order-confirm" i]');
+    if (marker && Safety.isVisible(marker)) return true;
+    const headings = Array.from(document.querySelectorAll('h1,h2,[role="heading"],[aria-level]')).filter(Safety.isVisible).slice(0, 120);
+    if (headings.some((element) => /^(?:оформление\s+заказа|подтверждение\s+заказа|checkout|order\s+(?:confirmation|review)|shopping\s+cart|корзина)(?:\s|$)/i.test(normalize(element.innerText || element.textContent || '')))) return true;
+    return Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(Safety.isVisible).slice(0, 500)
+      .some((element) => /^(?:оформить\s+заказ|разместить\s+заказ|подтвердить\s+заказ|place\s+order|submit\s+order|confirm\s+order)$/i.test(Safety.labelOf(element)));
+  }
+
+  let structuredItemCache = null;
+  function structuredCheckoutItems(visibleIds) {
+    if (!visibleIds.size) return [];
+    const scripts = Array.from(document.querySelectorAll('script[type="application/json"],script#__NEXT_DATA__,script[data-state],script[data-hydration]')).slice(0, 40);
+    const pathname = (() => { try { return new URL(location.href).pathname; } catch (_) { return ''; } })();
+    const visibleKey = [...visibleIds].sort().join(','); const lengths = scripts.map((script) => String(script.textContent || '').length);
+    if (structuredItemCache?.pathname === pathname && structuredItemCache.visibleKey === visibleKey && structuredItemCache.scripts.length === scripts.length &&
+      structuredItemCache.scripts.every((script, index) => script === scripts[index] && structuredItemCache.lengths[index] === lengths[index])) return structuredItemCache.items;
+    const result = []; let visited = 0; let totalBytes = 0;
+    const field = (object, names) => {
+      for (const name of names) {
+        const key = Object.keys(object).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+        const value = key ? object[key] : null;
+        if (typeof value === 'string') return value;
+        if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value);
+      }
+      return null;
+    };
+    const walk = (value) => {
+      if (!value || typeof value !== 'object' || visited++ > 60_000) return;
+      if (!Array.isArray(value)) {
+        const itemId = field(value, ['itemId', 'item_id', 'productId', 'product_id']);
+        if (itemId && visibleIds.has(itemId)) {
+          const rawSku = field(value, ['skuId', 'sku_id', 'selectedSkuId', 'selected_sku_id', 'variantId', 'variant_id']);
+          const rawQuantity = field(value, ['quantity', 'qty', 'buyCount', 'buy_count']);
+          const quantity = Number.isFinite(Number(rawQuantity)) && Number(rawQuantity) > 0 && Number(rawQuantity) <= 999 ? Number(rawQuantity) : null;
+          result.push({ itemId, skuId: rawSku && /^[A-Za-z0-9_-]{1,100}$/.test(rawSku) ? rawSku : null, quantity, sellerId: null, rootEvidence: true, evidenceSource: 'STRUCTURED' });
+        }
+      }
+      for (const child of Array.isArray(value) ? value : Object.values(value)) walk(child);
+    };
+    for (const script of scripts) {
+      const text = String(script.textContent || '').trim(); totalBytes += text.length;
+      if (!text || text.length > 1_000_000 || totalBytes > 2_000_000 || !/^[{[]/.test(text)) continue;
+      try { walk(JSON.parse(text)); } catch (_) {}
+    }
+    const grouped = new Map();
+    for (const row of result.slice(0, 300)) {
+      const group = grouped.get(row.itemId) || { itemId: row.itemId, skuIds: new Set(), quantities: new Set() };
+      if (row.skuId) group.skuIds.add(row.skuId); if (Number.isFinite(row.quantity)) group.quantities.add(row.quantity); grouped.set(row.itemId, group);
+    }
+    const items = [...grouped.values()].map((group) => ({
+      itemId: group.itemId,
+      skuId: group.skuIds.size === 1 ? [...group.skuIds][0] : null,
+      quantity: group.quantities.size === 1 ? [...group.quantities][0] : null,
+      sellerId: null,
+      rootEvidence: true,
+      evidenceSource: 'STRUCTURED'
+    }));
+    structuredItemCache = { pathname, visibleKey, scripts, lengths, items }; return items;
+  }
+
+  function mergeCheckoutItems(rows) {
+    const merged = [];
+    for (const row of rows) {
+      if (!(row.itemId || row.skuId)) continue;
+      const sameItem = row.itemId ? merged.filter((candidate) => candidate.itemId === row.itemId) : [];
+      let existing = merged.find((candidate) => row.skuId && candidate.skuId === row.skuId);
+      existing ||= sameItem.find((candidate) => !candidate.skuId || !row.skuId);
+      if (!existing && row.evidenceSource === 'STRUCTURED' && sameItem.some((candidate) => candidate.evidenceSource === 'DOM')) continue;
+      if (!existing) { merged.push({ ...row }); continue; }
+      for (const key of ['itemId', 'skuId', 'quantity', 'sellerId']) if (existing[key] === null || existing[key] === undefined) existing[key] = row[key] ?? null;
+      existing.rootEvidence = existing.rootEvidence || row.rootEvidence;
+    }
+    return merged;
+  }
+
   function checkoutItems() {
-    const selector = '[data-item-id],[data-product-id],[data-sku-id],[class*="cart-item" i],[class*="order-item" i],[data-testid*="cart-item" i],[data-testid*="order-item" i],[data-testid*="line-item" i],[data-testid*="product-item" i]';
-    const itemRootSelector = '[data-item-id],[data-product-id],[class*="cart-item" i],[class*="order-item" i],[data-testid*="cart-item" i],[data-testid*="order-item" i],[data-testid*="line-item" i],[data-testid*="product-item" i]';
+    const selector = '[data-item-id],[data-itemid],[data-product-id],[data-productid],[data-sku-id],[data-skuid],[data-variant-id],[class*="cart-item" i],[class*="order-item" i],[data-testid*="cart-item" i],[data-testid*="order-item" i],[data-testid*="line-item" i],[data-testid*="product-item" i]';
+    const itemRootSelector = '[data-item-id],[data-itemid],[data-product-id],[data-productid],[class*="cart-item" i],[class*="order-item" i],[data-testid*="cart-item" i],[data-testid*="order-item" i],[data-testid*="line-item" i],[data-testid*="product-item" i]';
     const raw = Array.from(document.querySelectorAll(selector)).filter(Safety.isVisible).slice(0, 600);
-    const roots = [...new Set(raw.map((element) => element.closest?.(itemRootSelector) || element))]; const map = new Map();
+    const links = checkoutIdentityScopePresent() ? visibleItemLinks() : [];
+    const roots = [...new Set([...raw.map((element) => element.closest?.(itemRootSelector) || element), ...links.map(itemRootForLink)])]; const rows = [];
     for (const root of roots) {
-      const link = root.matches?.('a[href*="/item/"]') ? root : root.querySelector?.('a[href*="/item/"]');
-      const itemId = attributeFrom(root, ['data-item-id', 'data-product-id', 'data-productid']) || String(link?.href || link?.getAttribute?.('href') || '').match(/\/item\/(\d+)/i)?.[1] || null;
-      const skuElement = root.matches?.('[data-sku-id]') ? root : root.querySelector?.('[data-sku-id]');
-      const skuId = attributeFrom(skuElement || root, ['data-sku-id', 'data-sku', 'data-variant-id']);
+      const link = root.tagName === 'A' && itemIdFromLink(root) ? root : root.querySelector?.('a[href*="/item/"],a[href*="itemId="],a[href*="productId="]');
+      const itemId = attributeFrom(root, ['data-item-id', 'data-itemid', 'data-product-id', 'data-productid']) || itemIdFromLink(link);
+      const skuElement = attributeFrom(root, ['data-sku-id', 'data-skuid', 'data-sku', 'data-variant-id']) ? root : root.querySelector?.('[data-sku-id],[data-skuid],[data-sku],[data-variant-id]');
+      const skuId = attributeFrom(skuElement || root, ['data-sku-id', 'data-skuid', 'data-sku', 'data-variant-id']);
       const quantityElement = root.querySelector?.('input[name*="quant" i],input[id*="quant" i],input[aria-label*="quant" i],select[name*="quant" i],[data-quantity]');
       const quantityText = attributeFrom(root, ['data-quantity']) || quantityElement?.value || normalize(root.innerText || root.textContent || '').match(/(?:qty|quantity|кол(?:-?во|ичество)|×|x)\s*[:×x]?\s*(\d{1,3})/i)?.[1];
       const quantity = quantityText !== null && quantityText !== undefined && quantityText !== '' && Number.isFinite(Number(quantityText)) ? Number(quantityText) : null;
@@ -214,10 +326,10 @@
       const sellerId = attributeFrom(sellerElement || root, ['data-seller-id', 'data-store-id']);
       const rootEvidence = !!(itemId || skuId || root.matches?.(itemRootSelector));
       if (!rootEvidence) continue;
-      const key = `${itemId || ''}|${skuId || ''}|${sellerId || ''}`;
-      const previous = map.get(key); map.set(key, { itemId, skuId, quantity: quantity ?? previous?.quantity ?? null, sellerId, rootEvidence });
+      rows.push({ itemId, skuId, quantity, sellerId, rootEvidence, evidenceSource: 'DOM' });
     }
-    return [...map.values()];
+    const visibleIds = new Set(links.map(itemIdFromLink).filter(Boolean));
+    return mergeCheckoutItems([...rows, ...structuredCheckoutItems(visibleIds)]);
   }
 
   function selectedShippingMethod() {
@@ -238,6 +350,51 @@
     const financial = C.buildFinancialSnapshot(breakdown);
     const fingerprint = C.buildCheckoutFingerprint({ currency: financial.currency, items: checkoutItems(), shippingMethodId: selectedShippingMethod() });
     return { breakdown, financial, fingerprint };
+  }
+
+  function checkoutSurfaceEvidence({ pageType = P.parsePageType(location.href), checkout = null } = {}) {
+    const state = checkout || readCheckout(); const signals = [];
+    const urlMatched = ['CART', 'CHECKOUT'].includes(pageType); if (urlMatched) signals.push(`URL_${pageType}`);
+    const markerSelector = '[data-testid*="checkout" i],[data-pl*="checkout" i],[data-testid*="order-confirm" i],[data-pl*="order-confirm" i],[id*="checkout" i],[class*="checkout-page" i],[class*="order-confirm" i]';
+    const markerFound = Array.from(document.querySelectorAll(markerSelector)).slice(0, 120).some(Safety.isVisible);
+    if (markerFound) signals.push('CHECKOUT_MARKER');
+    const headings = Array.from(document.querySelectorAll('h1,h2,[role="heading"],[aria-level]')).filter(Safety.isVisible).slice(0, 160);
+    const headingFound = headings.some((element) => /^(?:оформление\s+заказа|подтверждение\s+заказа|checkout|order\s+(?:confirmation|review)|shopping\s+cart|корзина)(?:\s|$)/i.test(normalize(element.innerText || element.textContent || element.getAttribute?.('aria-label') || '')));
+    if (headingFound) signals.push('CHECKOUT_HEADING');
+    const promoFound = !!(findPromoInput() || findRevealControl()); if (promoFound) signals.push('PROMO_CONTROL');
+    const totalFound = Number.isFinite(state.financial?.total) && (state.breakdown?.candidates || []).some((row) => row.kind === 'total');
+    if (totalFound) signals.push('ORDER_TOTAL');
+    const orderActionFound = Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(Safety.isVisible).slice(0, 800).some((element) => /^(?:оформить\s+заказ|разместить\s+заказ|подтвердить\s+заказ|place\s+order|submit\s+order|confirm\s+order)$/i.test(Safety.labelOf(element)));
+    if (orderActionFound) signals.push('ORDER_ACTION_READ_ONLY');
+    const candidate = urlMatched || markerFound || headingFound || orderActionFound || (promoFound && totalFound);
+    const detected = urlMatched || (markerFound && (headingFound || promoFound || totalFound || orderActionFound)) || (headingFound && (promoFound || totalFound || orderActionFound)) || (promoFound && totalFound && orderActionFound);
+    return { candidate, detected, pageClass: pageType === 'CART' ? 'CART' : 'CHECKOUT', signals, urlMatched, markerFound, headingFound, promoFound, totalFound, orderActionFound };
+  }
+
+  function effectiveCheckoutBinding(checkout = null) {
+    const pageType = P.parsePageType(location.href); const surface = checkoutSurfaceEvidence({ pageType, checkout });
+    return { binding: C.checkoutBinding(location.href, surface.detected ? surface.pageClass : pageType), pageType, surface };
+  }
+
+  function safeWidgetDiagnostics(context, checkout) {
+    const fingerprint = checkout.fingerprint || {}; const items = fingerprint.items || [];
+    let pathname = null; try { pathname = new URL(location.href).pathname; } catch (_) {}
+    const input = findPromoInput(); const selectors = { inputFound: !!input, applyFound: !!findApplyButton(input), revealFound: !!findRevealControl() };
+    return {
+      pathname,
+      pageType: context.pageType,
+      checkoutSurfaceDetected: context.checkoutSurfaceDetected,
+      checkoutSurfaceSignals: context.checkoutSurfaceSignals,
+      financial: C.buildFinancialSnapshot(checkout.financial),
+      fingerprint: { quality: fingerprint.quality || 'WEAK', componentsUsed: Array.isArray(fingerprint.componentsUsed) ? fingerprint.componentsUsed.slice() : [] },
+      items: {
+        count: items.length,
+        itemIdDetected: items.filter((row) => !!row.itemId).length,
+        skuIdDetected: items.filter((row) => !!row.skuId).length,
+        quantityDetected: items.filter((row) => Number.isFinite(row.quantity)).length
+      },
+      selectors: { inputFound: selectors.inputFound, applyFound: selectors.applyFound, revealFound: selectors.revealFound }
+    };
   }
 
   function checkoutSignature(checkout) {
@@ -309,7 +466,7 @@
 
   const domAdapter = {
     now: () => Date.now(),
-    getBinding: () => C.checkoutBinding(location.href, P.parsePageType(location.href)),
+    getBinding: () => effectiveCheckoutBinding().binding,
     normalizeCandidates: (rows) => normalizeCandidateQueue(rows),
     normalizeCandidate: (row) => ({ ...row, ...P.normalizePromotion({ ...row, type: P.PROMOTION_TYPES.PLATFORM_PROMO_CODE, source: row.source || 'USER', confidence: row.confidence || 50 }) }),
     ensureReady: async () => ({ ok: !!await ensurePromoInput(), message: 'Поле промокода не найдено' }),
@@ -376,18 +533,20 @@
   function safeUrl() { try { const url = new URL(location.href); return `${url.origin}${url.pathname}`; } catch (_) { return null; } }
 
   function checkoutContext() {
-    const pageType = P.parsePageType(location.href);
-    const binding = C.checkoutBinding(location.href, pageType);
     const checkout = readCheckout();
+    const { binding, pageType, surface } = effectiveCheckoutBinding(checkout);
     const fingerprint = checkout.fingerprint || {};
     const financial = checkout.financial || {};
-    const supportedPage = ['CART', 'CHECKOUT'].includes(binding.pageClass);
+    const supportedPage = surface.detected && ['CART', 'CHECKOUT'].includes(binding.pageClass);
     const reliableIdentity = verifier.fingerprintIsReliable(fingerprint);
     const hasTotal = Number.isFinite(financial.total);
-    return {
+    const context = {
       available: supportedPage && reliableIdentity && hasTotal,
       pageType,
       binding,
+      checkoutSurfaceDetected: surface.detected,
+      checkoutSurfaceCandidate: surface.candidate,
+      checkoutSurfaceSignals: surface.signals.slice(),
       checkoutFingerprint: fingerprint,
       currency: financial.currency || fingerprint.currency || null,
       subtotal: financial.subtotal,
@@ -400,8 +559,9 @@
       isNewUser: null,
       newUserStatusConfidence: 0,
       fingerprintQuality: fingerprint.quality || 'WEAK',
-      reason: !supportedPage ? 'Откройте корзину или checkout AliExpress' : !reliableIdentity ? 'Не удалось надёжно определить состав корзины' : !hasTotal ? 'Не удалось определить итоговую сумму заказа' : null
+      reason: !supportedPage ? 'Не удалось распознать страницу checkout' : !reliableIdentity ? 'Не удалось надёжно определить состав заказа' : !hasTotal ? 'Не удалось определить итоговую сумму' : null
     };
+    context.diagnostics = safeWidgetDiagnostics(context, checkout); return context;
   }
 
   async function diagnostics() {
@@ -435,7 +595,7 @@
   globalThis.CouponHunterPromoTester = {
     normalizeCodes, normalizeCandidateQueue, inputScore, scoreApplyControl, scoreRemoveControl, findApplyButton, findRemoveButton,
     readBreakdown, readCheckout, summaryRows, checkoutItems, selectedShippingMethod, appliedIndicator, existingPlatformCode, selectorDiagnostics, diagnostics,
-    checkoutContext, executeCommand,
+    checkoutContext, checkoutSurfaceEvidence, effectiveCheckoutBinding, safeWidgetDiagnostics, executeCommand,
     isForbiddenActionLabel: Safety.isForbiddenActionLabel
   };
 

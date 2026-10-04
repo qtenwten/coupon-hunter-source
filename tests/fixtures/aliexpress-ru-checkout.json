@@ -1,0 +1,29 @@
+{
+  "url": "https://aliexpress.ru/p/order/confirm.html?checkoutToken=redacted",
+  "heading": "Оформление заказа",
+  "promoControl": "Ввести промокод",
+  "orderAction": "Оформить заказ",
+  "summary": "Итого к оплате 8 923 ₽",
+  "decoys": [
+    "Количество: 1",
+    "Телефон: +7 999 000-11-22",
+    "Доставка 468 ₽"
+  ],
+  "itemHref": "https://aliexpress.ru/item/1005001234567890.html",
+  "structuredState": {
+    "checkoutItems": [
+      {
+        "itemId": "1005001234567890",
+        "skuId": "12000041234567890",
+        "quantity": 1
+      }
+    ]
+  },
+  "expected": {
+    "pageType": "CHECKOUT",
+    "total": 8923,
+    "currency": "RUB",
+    "itemId": "1005001234567890",
+    "skuId": "12000041234567890"
+  }
+}

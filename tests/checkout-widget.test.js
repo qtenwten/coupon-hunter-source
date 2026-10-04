@@ -16,6 +16,12 @@ test('checkout widget exposes the explicit Russian start, stop and apply-best co
   t.match(source, /Стандартный — до 30/); t.match(source, /Глубокий — до 50/);
 });
 
+test('unavailable checkout context does not remove a detected checkout widget', (t) => {
+  const source = fs.readFileSync(`${ROOT}/src/checkout-widget.js`, 'utf8');
+  const renderSource = source.slice(source.indexOf('function render(view)'), source.indexOf('const controller ='));
+  t.match(renderSource, /if \(!view\.visible\)/); t.ok(!/if \(!view\.available\)[\s\S]{0,120}panel\.remove/.test(renderSource));
+});
+
 function completeSession(bestCode = null) {
   const results = bestCode ? [{
     code: bestCode, verified: true, verificationStatus: 'VALID_APPLIED', saving: 1200,
@@ -25,12 +31,12 @@ function completeSession(bestCode = null) {
 }
 
 function createHarness(options = {}) {
-  const commands = []; let refreshCalls = 0;
+  const commands = []; let refreshCalls = 0; let contextRead = 0;
   const library = options.library || Array.from({ length: 60 }, (_, index) => ({ code: `CODE${String(index).padStart(2, '0')}`, rankScore: 1000 - index }));
-  const context = options.context || { available: true, currency: 'RUB', checkoutFingerprint: { signature: 'cart-1' }, binding: { origin: 'https://aliexpress.ru', pageClass: 'CHECKOUT', pathClass: '/checkout' } };
+  const context = options.context || { checkoutSurfaceDetected: true, available: true, currency: 'RUB', checkoutFingerprint: { signature: 'cart-1' }, binding: { origin: 'https://aliexpress.ru', pageClass: 'CHECKOUT', pathClass: '/checkout' } };
   const controller = Core.createController({
     limits: LIMITS,
-    getContext: async () => context,
+    getContext: async () => options.contexts ? options.contexts[Math.min(contextRead++, options.contexts.length - 1)] : context,
     loadSession: async () => options.session || null,
     refreshFeed: async () => { refreshCalls += 1; return { ok: true, count: library.length }; },
     loadLibrary: async () => library,
@@ -53,6 +59,32 @@ function createHarness(options = {}) {
 test('checkout widget initializes READY without starting PromoTester', async (t) => {
   const harness = createHarness(); const view = await harness.controller.initialize();
   t.equal(view.state, 'READY'); t.equal(harness.commands.length, 0); t.equal(harness.refreshCalls, 1);
+});
+
+test('checkout-like surface stays visible when fingerprint is WEAK and start remains disabled', async (t) => {
+  const diagnostics = { fingerprint: { quality: 'WEAK', componentsUsed: ['currency'] } };
+  const harness = createHarness({ context: { checkoutSurfaceDetected: true, available: false, reason: 'Не удалось надёжно определить состав заказа', diagnostics } });
+  const view = await harness.controller.initialize();
+  t.equal(view.visible, true); t.equal(view.available, false); t.equal(view.state, 'IDLE'); t.equal(view.canStart, false); t.deep(harness.commands, []);
+});
+
+test('checkout candidate remains visible when independent evidence is not yet sufficient', async (t) => {
+  const harness = createHarness({ context: { checkoutSurfaceCandidate: true, checkoutSurfaceDetected: false, available: false, reason: 'Не удалось распознать страницу checkout' } });
+  const view = await harness.controller.initialize();
+  t.equal(view.visible, true); t.equal(view.available, false); t.equal(view.canStart, false); t.match(view.message, /распознать страницу checkout/);
+});
+
+test('ready checkout surface enables explicit start', async (t) => {
+  const harness = createHarness(); const view = await harness.controller.initialize();
+  t.equal(view.visible, true); t.equal(view.state, 'READY'); t.equal(view.canStart, true);
+});
+
+test('widget transitions from visible WEAK state to READY after identity appears', async (t) => {
+  const weak = { checkoutSurfaceDetected: true, available: false, diagnostics: { fingerprint: { quality: 'WEAK' } } };
+  const ready = { checkoutSurfaceDetected: true, available: true, currency: 'RUB', checkoutFingerprint: { signature: 'cart-ready' }, binding: { origin: 'https://aliexpress.ru', pageClass: 'CHECKOUT', pathClass: '/checkout' } };
+  const harness = createHarness({ contexts: [weak, ready] });
+  const first = await harness.controller.initialize(); const second = await harness.controller.refresh({ refreshFeed: true });
+  t.equal(first.visible, true); t.equal(first.canStart, false); t.equal(second.state, 'READY'); t.equal(second.canStart, true); t.equal(second.foundCount, 60);
 });
 
 test('remote feed refresh never starts automatic promo verification', async (t) => {
@@ -139,7 +171,13 @@ for (const stopReason of ['CAPTCHA', 'RATE_LIMITED']) {
   });
 }
 
-test('widget remains absent when checkout context is not safe enough', async (t) => {
-  const harness = createHarness({ context: { available: false } }); const view = await harness.controller.initialize();
-  t.equal(view.state, 'IDLE'); t.equal(view.available, false); t.equal(view.canStart, false); t.deep(harness.commands, []);
+test('non-checkout AliExpress page does not show checkout widget', async (t) => {
+  const harness = createHarness({ context: { checkoutSurfaceDetected: false, available: false } }); const view = await harness.controller.initialize();
+  t.equal(view.state, 'IDLE'); t.equal(view.visible, false); t.equal(view.available, false); t.equal(view.canStart, false); t.deep(harness.commands, []);
+});
+
+test('WEAK checkout fingerprint never sends CH_TEST_PROMOS', async (t) => {
+  const harness = createHarness({ context: { checkoutSurfaceDetected: true, available: false, fingerprintQuality: 'WEAK' } });
+  await harness.controller.initialize(); await harness.controller.start();
+  t.equal(harness.commands.some((row) => row.type === 'CH_TEST_PROMOS'), false);
 });

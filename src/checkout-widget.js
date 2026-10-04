@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__COUPON_HUNTER_CHECKOUT_WIDGET_V330__) return;
-  window.__COUPON_HUNTER_CHECKOUT_WIDGET_V330__ = true;
+  if (window.__COUPON_HUNTER_CHECKOUT_WIDGET_V331__) return;
+  window.__COUPON_HUNTER_CHECKOUT_WIDGET_V331__ = true;
 
   const Core = globalThis.CouponHunterCheckoutWidgetCore;
   const Checkout = globalThis.CouponHunterCheckoutCore;
@@ -43,6 +43,17 @@
         <div class="ch-promo-stats"><span>Найдено: <b data-ch="found">0</b> кодов</span><span>Подходит для заказа: <b data-ch="applicable">0</b></span></div>
         <div class="ch-ready-message" data-ch="message">Проверяю состав заказа…</div>
         <button class="ch-primary-wide" data-ch="start" type="button">Подобрать лучший промокод</button>
+        <div class="ch-checkout-diagnostics" data-ch="diagnostics" hidden>
+          <div><span>Page type</span><b data-ch="diag-page">—</b></div>
+          <div><span>Checkout surface</span><b data-ch="diag-surface">NO</b></div>
+          <div><span>Total</span><b data-ch="diag-total">NOT FOUND</b></div>
+          <div><span>Fingerprint</span><b data-ch="diag-fingerprint">WEAK</b></div>
+          <div><span>Items detected</span><b data-ch="diag-items">0</b></div>
+          <div><span>itemId detected</span><b data-ch="diag-item-ids">0</b></div>
+          <div><span>skuId detected</span><b data-ch="diag-sku-ids">0</b></div>
+          <div><span>Promo input/reveal</span><b data-ch="diag-promo">NOT FOUND</b></div>
+          <button class="ch-secondary ch-copy-diagnostics" data-ch="copy-diagnostics" type="button">Скопировать диагностику</button>
+        </div>
         <div class="ch-modes" data-ch="modes">
           <label><input type="radio" name="ch-mode" value="STANDARD" checked> Стандартный — до 30</label>
           <label><input type="radio" name="ch-mode" value="DEEP"> Глубокий — до 50</label>
@@ -65,6 +76,13 @@
       actionMessage = null; const response = await controller.applyBest();
       actionMessage = response?.status === 'APPLIED' ? 'Лучший код применён. Проверьте итог перед оформлением заказа.' : response?.message || 'Код не применён.'; render(controller.view());
     });
+    root.querySelector('[data-ch="copy-diagnostics"]').addEventListener('click', async () => {
+      const diagnostics = controller.view().diagnostics;
+      if (!diagnostics) return;
+      try { await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2)); actionMessage = 'Безопасная диагностика скопирована.'; }
+      catch (_) { actionMessage = 'Не удалось скопировать диагностику.'; }
+      render(controller.view());
+    });
     for (const input of root.querySelectorAll('input[name="ch-mode"]')) input.addEventListener('change', () => { if (input.checked) controller.setMode(input.value); });
     return root;
   }
@@ -72,6 +90,10 @@
   function setText(root, name, value) { const element = root.querySelector(`[data-ch="${name}"]`); if (element) element.textContent = value ?? ''; }
 
   function statusText(view) {
+    if (view.visible && !view.available) {
+      if (!view.diagnostics?.checkoutSurfaceDetected) return 'проверка пока недоступна';
+      return view.diagnostics?.fingerprint?.quality === 'WEAK' ? 'нужно уточнить состав заказа' : 'проверка пока недоступна';
+    }
     if (view.state === Core.STATES.READY) return 'готов к проверке';
     if ([Core.STATES.TESTING, Core.STATES.FOUND_BEST].includes(view.state) && view.sessionStatus === 'TESTING') return '● проверка идёт';
     if (view.state === Core.STATES.FOUND_BEST) return '● лучший найден';
@@ -102,12 +124,19 @@
   }
 
   function render(view) {
-    if (!view.available) {
+    if (!view.visible) {
       if (panel?.getAttribute('data-ch-surface') === 'checkout') { panel.remove(); panel = null; }
       return;
     }
     panel = panel || buildPanel(); panel.hidden = false; panel.setAttribute('data-ch-state', view.state);
     setText(panel, 'status', statusText(view)); setText(panel, 'found', view.foundCount); setText(panel, 'applicable', view.applicableCount); setText(panel, 'message', primaryMessage(view));
+    const diagnostics = view.diagnostics || {}; const financial = diagnostics.financial || {}; const fingerprint = diagnostics.fingerprint || {}; const items = diagnostics.items || {}; const selectors = diagnostics.selectors || {};
+    const diagnosticsRoot = panel.querySelector('[data-ch="diagnostics"]'); diagnosticsRoot.hidden = view.available;
+    setText(panel, 'diag-page', diagnostics.pageType || 'UNKNOWN'); setText(panel, 'diag-surface', diagnostics.checkoutSurfaceDetected ? 'YES' : 'NO');
+    setText(panel, 'diag-total', Number.isFinite(financial.total) ? money(financial.total, financial.currency) : 'NOT FOUND');
+    setText(panel, 'diag-fingerprint', fingerprint.quality || 'WEAK'); setText(panel, 'diag-items', items.count || 0);
+    setText(panel, 'diag-item-ids', items.itemIdDetected || 0); setText(panel, 'diag-sku-ids', items.skuIdDetected || 0);
+    setText(panel, 'diag-promo', selectors.inputFound || selectors.revealFound ? 'FOUND' : 'NOT FOUND');
     const active = view.sessionStatus === 'TESTING'; const progress = panel.querySelector('[data-ch="progress"]'); progress.hidden = !active;
     setText(panel, 'progress-title', view.bestCode ? 'Проверяем промокоды · лучший уже найден' : 'Проверяем промокоды');
     setText(panel, 'progress-count', `${view.progress} из ${view.queueCount}`); setText(panel, 'current', view.currentCode ? ` · ${view.currentCode}` : '');
@@ -137,12 +166,26 @@
     onChange: render
   });
 
+  function checkoutMutationIsMeaningful(mutation) {
+    const target = mutation?.target instanceof Element ? mutation.target : mutation?.target?.parentElement;
+    if (target?.closest?.('#coupon-hunter-panel')) return false;
+    if (Adapter.mutationIsMeaningful(mutation)) return true;
+    const identitySelector = '[data-item-id],[data-itemid],[data-product-id],[data-productid],[data-sku-id],[data-skuid],[data-variant-id],a[href*="/item/"]';
+    if (mutation?.type === 'attributes') return ['data-item-id', 'data-itemid', 'data-product-id', 'data-productid', 'data-sku-id', 'data-skuid', 'data-variant-id', 'href'].includes(mutation.attributeName);
+    if (mutation?.type !== 'childList') return false;
+    return Array.from(mutation.addedNodes || []).slice(0, 20).some((node) => {
+      if (!(node instanceof Element)) return false;
+      if (node.matches?.(identitySelector) || node.querySelector?.(identitySelector)) return true;
+      return /(оформление\s+заказа|ввести\s+промокод|итого\s+к\s+оплате|checkout|place\s+order)/i.test(String(node.textContent || '').slice(0, 500));
+    });
+  }
+
   controller.initialize();
   chrome.storage.onChanged.addListener((changes, area) => { if (area === 'local' && changes.promoTestSession) controller.restoreSession(changes.promoTestSession.newValue); });
   const schedule = Adapter?.createScheduler ? Adapter.createScheduler(() => { if (!controller.view().canStop) controller.refresh({ refreshFeed: true }); }, { debounceMs: 500, minIntervalMs: 1200 }) : null;
   if (schedule) {
-    const observer = new MutationObserver((mutations) => { if (mutations.some((mutation) => Adapter.mutationIsMeaningful(mutation))) schedule('checkout-change'); });
-    observer.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class', 'aria-selected', 'aria-checked', 'data-selected', 'data-sku-id'] });
+    const observer = new MutationObserver((mutations) => { if (mutations.some(checkoutMutationIsMeaningful)) schedule('checkout-change'); });
+    observer.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class', 'aria-selected', 'aria-checked', 'data-selected', 'data-item-id', 'data-itemid', 'data-product-id', 'data-productid', 'data-sku-id', 'data-skuid', 'data-variant-id', 'href'] });
   }
   setInterval(() => { if (location.href !== lastUrl) { lastUrl = location.href; controller.refresh({ refreshFeed: true }); } }, 1000);
 

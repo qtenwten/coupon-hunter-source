@@ -29,7 +29,7 @@
 
   function stateFor(context, session, error = null) {
     if (error) return STATES.ERROR;
-    if (!context?.available) return STATES.IDLE;
+    if (!context?.checkoutSurfaceDetected || !context?.available) return STATES.IDLE;
     if (!session) return STATES.READY;
     const best = bestResult(session);
     if (ACTIVE_SESSION.has(session.status)) return best ? STATES.FOUND_BEST : STATES.TESTING;
@@ -92,16 +92,16 @@
       const progress = Math.min(total, results.length + (session?.current ? 1 : 0));
       const recent = results.slice(-4); if (best && !recent.includes(best)) recent.unshift(best);
       return {
-        state, mode: model.mode, available: !!model.context?.available,
+        state, mode: model.mode, visible: !!(model.context?.checkoutSurfaceCandidate ?? model.context?.checkoutSurfaceDetected), available: !!model.context?.available,
         foundCount: model.library.length, applicableCount: model.plan?.diagnostics?.eligible || 0,
         queueCount: total, progress, currentCode: session?.current || null,
         bestCode: best?.code || null, bestSaving: finite(Number(best?.saving)), currency: best?.priceAfter?.currency || best?.priceBefore?.currency || session?.currency || model.context?.currency || null,
         recentResults: recent.slice(-5).map((row) => ({ code: row.code, tone: resultTone(row), label: resultLabel(row), saving: finite(Number(row.saving)), verificationStatus: row.verificationStatus })),
         sessionStatus: session?.status || null, completed: session?.status === 'COMPLETE', bestApplied: session?.bestApplied === true,
-        message: state === STATES.SAFETY_STOP ? safetyMessage(session) : session?.stopReason || model.error || null,
+        message: state === STATES.SAFETY_STOP ? safetyMessage(session) : session?.stopReason || model.error || model.context?.reason || null,
         canStart: !!model.context?.available && !ACTIVE_SESSION.has(session?.status) && !!model.plan?.queue?.length,
         canStop: ACTIVE_SESSION.has(session?.status), canApplyBest: session?.status === 'COMPLETE' && !!best?.code && session?.bestApplied !== true,
-        feedStatus: model.feedStatus
+        feedStatus: model.feedStatus, diagnostics: model.context?.diagnostics || null
       };
     }
 

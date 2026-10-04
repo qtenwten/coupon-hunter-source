@@ -31,6 +31,17 @@ test('item, page type and discount helpers', (t) => {
   t.equal(P.calculateDiscount(10000, 7500), null);
 });
 
+test('modern AliExpress checkout routes are classified without broad order matching', (t) => {
+  for (const url of [
+    'https://aliexpress.ru/p/checkout/index.html',
+    'https://aliexpress.ru/p/trade/order/confirm.html',
+    'https://aliexpress.ru/p/order/confirm.html',
+    'https://aliexpress.com/order/create.html'
+  ]) t.equal(P.parsePageType(url), 'CHECKOUT', url);
+  t.equal(P.parsePageType('https://aliexpress.ru/p/order/history.html'), 'ALIEXPRESS_OTHER');
+  t.equal(P.parsePageType('https://aliexpress.ru/item/1005001234567890.html?order=popular'), 'PRODUCT');
+});
+
 test('normalized promotion types and conditions', (t) => {
   for (const row of fixture('promotions.json').cases) {
     const hit = P.extractPromotionsFromText(row.text)[0];
@@ -82,7 +93,7 @@ test('product parser rejects shipping, tax, old and recommendation prices', (t) 
   t.ok(product.debug.priceCandidates.some((row) => row.context?.includes('Доставка')));
   t.ok(product.debug.priceCandidates.some((row) => row.context?.includes('Налог')));
   t.ok(product.debug.priceCandidates.some((row) => row.recommendation));
-  t.equal(product.parserVersion, '3.3.0');
+  t.equal(product.parserVersion, '3.3.1');
 });
 
 test('selected SKU price updates after a SKU change', (t) => {

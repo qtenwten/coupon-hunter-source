@@ -55,5 +55,11 @@
 #coupon-hunter-panel .ch-unknown { color:#ffe2a1; }
 #coupon-hunter-panel .ch-checkout-actions { margin-top:0; }
 #coupon-hunter-panel .ch-checkout-actions button:not(.ch-secondary) { background:#b9f59d; }
+#coupon-hunter-panel .ch-checkout-diagnostics { display:grid; gap:4px; padding:9px 10px; border:1px solid rgba(255,255,255,.1); border-radius:9px; background:rgba(0,0,0,.16); font-size:11px; }
+#coupon-hunter-panel .ch-checkout-diagnostics[hidden] { display:none; }
+#coupon-hunter-panel .ch-checkout-diagnostics > div { display:flex; justify-content:space-between; gap:10px; }
+#coupon-hunter-panel .ch-checkout-diagnostics span { opacity:.62; }
+#coupon-hunter-panel .ch-checkout-diagnostics b { max-width:175px; text-align:right; overflow-wrap:anywhere; }
+#coupon-hunter-panel .ch-copy-diagnostics { width:100%; margin-top:5px; }
 #coupon-hunter-panel[data-ch-state="SAFETY_STOP"] .ch-ready-message,
 #coupon-hunter-panel[data-ch-state="ERROR"] .ch-ready-message { background:rgba(218,74,57,.16); color:#ffd0ca; }
