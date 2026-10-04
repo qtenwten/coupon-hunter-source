@@ -1,10 +1,10 @@
-# Coupon Hunter collector 3.2.0
+# Coupon Hunter collector 3.2.1
 
 Collector — отдельный Node.js data pipeline. Он не входит в Chrome extension и не получает корзину, SKU, total, аккаунт или browser history пользователя.
 
 ## Production publishing
 
-`.github/workflows/production-feed.yml` запускается вручную и по cron `17 */6 * * *`. Tests идут без provider credentials. Только build-step получает `FEEDICO_TOKEN` и `COUPON_HUNTER_FEED_PRIVATE_KEY`, после чего runner повторно проверяет подпись public JWK без нового provider request. Production feed действует 18 часов.
+`.github/workflows/production-feed.yml` запускается вручную и по cron `17 */6 * * *`. Tests идут без provider credentials. Только build-step получает `FEEDICO_TOKEN` и `COUPON_HUNTER_FEED_PRIVATE_KEY_B64`, после чего runner повторно проверяет подпись public JWK без нового provider request. Production feed действует 18 часов.
 
 Pages artifact содержит только `promo-feed.json` и безопасный `health.json`. Generated files, provider state и private key не коммитятся.
 
@@ -16,7 +16,7 @@ Cursor/state хранится отдельно в `collector/.provider-state.jso
 - `COUPONAPI_INITIAL_EXTRACT` — опциональный initial epoch для контролируемого первого resync; затем используется сохранённый cursor;
 - `FEEDICO_TOKEN` — Feedico catalog API. AliExpress coverage должна быть подтверждена реальным ответом аккаунта;
 - `ALIGATE_RAPIDAPI_KEY` + `ALIGATE_STORE_NUMS` — только seller-scoped coupons для явно заданных store numbers;
-- `COUPON_HUNTER_FEED_PRIVATE_KEY` — Ed25519 PEM; ключ никогда не помещается в extension/feed/repository;
+- `COUPON_HUNTER_FEED_PRIVATE_KEY_B64` — base64 от Ed25519 PKCS8 PEM; ключ декодируется и сверяется с public JWK до provider/network access и никогда не помещается в extension/feed/repository;
 - `COUPON_HUNTER_FEED_KEY_ID` — публичный идентификатор signing key.
 
 Без credentials соответствующий adapter имеет `DISABLED`/`AUTH_REQUIRED`; коды не подставляются из fixtures. SimplyCodes остаётся `REQUIRES_PROVIDER_ACCESS`, официальный AliExpress source — `NO_CONFIRMED_BUYER_PROMO_ENDPOINT`.
@@ -35,7 +35,7 @@ Public feed — data-only schema v3:
   "generatedAt": "…",
   "expiresAt": "…",
   "promos": [],
-  "signature": { "algorithm": "Ed25519", "keyId": "feed-ed25519-2026-10-04", "value": "…" }
+  "signature": { "algorithm": "Ed25519", "keyId": "feed-ed25519-2026-10-05", "value": "…" }
 }
 ```
 
@@ -45,7 +45,7 @@ Extension использует production URL и public Ed25519 JWK из `src/pr
 {
   "url": "https://qtenwten.github.io/coupon-hunter-source/promo-feed.json",
   "requireSignature": true,
-  "publicKeyJwk": { "crv": "Ed25519", "x": "jBRSI-FTT51OwIpTN-6DI5kInmvhnoolJUdjcLn8_ac", "kty": "OKP" }
+  "publicKeyJwk": { "crv": "Ed25519", "x": "G_ifdtSAuos7LGKdXjcIRjEsBZ8ZhYlRHWjaRlPUjSg", "kty": "OKP" }
 }
 ```
 

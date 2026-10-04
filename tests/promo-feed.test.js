@@ -92,8 +92,9 @@ test('production feed is configured by default with exact URL, JWK and required 
   const source = await F.configuredSource(new FakeStorage());
   t.equal(source.url, 'https://qtenwten.github.io/coupon-hunter-source/promo-feed.json');
   t.equal(source.requireSignature, true);
-  t.deep(source.publicKeyJwk, { crv: 'Ed25519', x: 'jBRSI-FTT51OwIpTN-6DI5kInmvhnoolJUdjcLn8_ac', kty: 'OKP' });
+  t.deep(source.publicKeyJwk, { crv: 'Ed25519', x: 'G_ifdtSAuos7LGKdXjcIRjEsBZ8ZhYlRHWjaRlPUjSg', kty: 'OKP' });
   t.equal(JSON.stringify(Production.publicKeyJwk), JSON.stringify(source.publicKeyJwk));
+  t.equal(Production.keyId, 'feed-ed25519-2026-10-05');
 });
 
 test('production config cannot be downgraded while local dev fixture remains available', async (t) => {

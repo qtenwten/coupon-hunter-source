@@ -39,19 +39,20 @@ test('production workflow is manual and six-hour scheduled without pull request 
 test('production secrets are scoped only to the gated build step after tests', (t) => {
   const source = fs.readFileSync(productionWorkflowPath, 'utf8');
   const beforeSteps = source.slice(0, source.indexOf('    steps:'));
-  const productionStepStart = source.indexOf('      - name: Build, quality gate and verify signed production feed');
+  const productionStepStart = source.indexOf('      - name: Preflight signing key, build and quality gate production feed');
   const productionStepEnd = source.indexOf('\n      - name:', productionStepStart + 1);
   const productionStep = source.slice(productionStepStart, productionStepEnd);
-  t.ok(!/FEEDICO_TOKEN|COUPON_HUNTER_FEED_PRIVATE_KEY/.test(beforeSteps));
-  t.equal((source.match(/secrets\.FEEDICO_TOKEN/g) || []).length, 1); t.equal((source.match(/secrets\.COUPON_HUNTER_FEED_PRIVATE_KEY/g) || []).length, 1);
+  t.ok(!/FEEDICO_TOKEN|COUPON_HUNTER_FEED_PRIVATE_KEY_B64/.test(beforeSteps));
+  t.equal((source.match(/secrets\.FEEDICO_TOKEN/g) || []).length, 1); t.equal((source.match(/secrets\.COUPON_HUNTER_FEED_PRIVATE_KEY_B64/g) || []).length, 1);
   t.match(productionStep, /FEEDICO_TOKEN:\s*\$\{\{ secrets\.FEEDICO_TOKEN \}\}/);
-  t.match(productionStep, /COUPON_HUNTER_FEED_PRIVATE_KEY:\s*\$\{\{ secrets\.COUPON_HUNTER_FEED_PRIVATE_KEY \}\}/);
+  t.match(productionStep, /COUPON_HUNTER_FEED_PRIVATE_KEY_B64:\s*\$\{\{ secrets\.COUPON_HUNTER_FEED_PRIVATE_KEY_B64 \}\}/);
+  t.ok(!/COUPON_HUNTER_FEED_PRIVATE_KEY(?!_B64)/.test(source), 'legacy multiline PEM secret is not referenced');
   t.ok(source.indexOf('run: npm test') < productionStepStart);
 });
 
 test('Pages deploy depends on verified artifact and cannot precede quality gate', (t) => {
   const source = fs.readFileSync(productionWorkflowPath, 'utf8');
-  const gate = source.indexOf('Build, quality gate and verify signed production feed'); const verify = source.indexOf('collector:verify-production'); const upload = source.indexOf('actions/upload-pages-artifact@v4'); const deploy = source.indexOf('actions/deploy-pages@v4');
+  const gate = source.indexOf('Preflight signing key, build and quality gate production feed'); const verify = source.indexOf('collector:verify-production'); const upload = source.indexOf('actions/upload-pages-artifact@v4'); const deploy = source.indexOf('actions/deploy-pages@v4');
   t.ok(gate >= 0 && gate < verify && verify < upload && upload < deploy); t.match(source, /deploy:\s*\n\s+needs:\s*build-and-verify/);
   t.match(source, /pages:\s*write/); t.match(source, /id-token:\s*write/); t.match(source, /name:\s*github-pages/);
   t.ok(!/git\s+(?:add|commit|push)/.test(source));

@@ -1,8 +1,8 @@
 (() => {
   'use strict';
-  if (globalThis.CouponHunterParser?.parserVersion === '3.2.0') return;
+  if (globalThis.CouponHunterParser?.parserVersion === '3.2.1') return;
 
-  const PARSER_VERSION = '3.2.0';
+  const PARSER_VERSION = '3.2.1';
   const PROMOTION_TYPES = Object.freeze({
     PLATFORM_PROMO_CODE: 'PLATFORM_PROMO_CODE', ALIEXPRESS_COUPON: 'ALIEXPRESS_COUPON',
     SELLER_COUPON: 'SELLER_COUPON', STORE_DISCOUNT: 'STORE_DISCOUNT', SELECT_COUPON: 'SELECT_COUPON',

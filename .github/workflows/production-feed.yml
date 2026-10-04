@@ -30,10 +30,10 @@ jobs:
       - name: Run regression suite without provider credentials
         run: npm test
 
-      - name: Build, quality gate and verify signed production feed
+      - name: Preflight signing key, build and quality gate production feed
         env:
           FEEDICO_TOKEN: ${{ secrets.FEEDICO_TOKEN }}
-          COUPON_HUNTER_FEED_PRIVATE_KEY: ${{ secrets.COUPON_HUNTER_FEED_PRIVATE_KEY }}
+          COUPON_HUNTER_FEED_PRIVATE_KEY_B64: ${{ secrets.COUPON_HUNTER_FEED_PRIVATE_KEY_B64 }}
         run: npm run collector:production
 
       - name: Verify generated feed against bundled public JWK

@@ -69,7 +69,7 @@ async function buildFeed(adapters = defaultRegistry(), options = {}) { return (a
 async function buildProductionFeed(options = {}) {
   const output = options.output; const statePath = options.statePath; const previousFeed = await readJson(output, null); const providerState = await readJson(statePath, {});
   const built = await buildFeedWithState(options.adapters || defaultRegistry(), { ...options, previousFeed, providerState });
-  const privateKey = options.privateKey || process.env.COUPON_HUNTER_FEED_PRIVATE_KEY; const finalFeed = privateKey ? signFeed(built.feed, privateKey, options.keyId || process.env.COUPON_HUNTER_FEED_KEY_ID || 'production') : built.feed;
+  const privateKey = options.privateKey || null; const finalFeed = privateKey ? signFeed(built.feed, privateKey, options.keyId || process.env.COUPON_HUNTER_FEED_KEY_ID || 'production') : built.feed;
   validateFeed(finalFeed); await writeJsonAtomic(output, finalFeed); await writeJsonAtomic(statePath, built.providerState); return finalFeed;
 }
 async function main() {

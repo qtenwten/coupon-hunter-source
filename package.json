@@ -1,6 +1,6 @@
 {
   "name": "coupon-hunter-aliexpress",
-  "version": "3.2.0",
+  "version": "3.2.1",
   "private": true,
   "description": "Local Chrome extension for AliExpress price, discount and coupon tracking",
   "scripts": {
