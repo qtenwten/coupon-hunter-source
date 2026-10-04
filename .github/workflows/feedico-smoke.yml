@@ -10,9 +10,6 @@ jobs:
   feedico-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      FEEDICO_TOKEN: ${{ secrets.FEEDICO_TOKEN }}
-      COUPON_HUNTER_PROVIDER_STATE: .feedico-smoke-state.json
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -26,6 +23,9 @@ jobs:
         run: npm test
 
       - name: Run Feedico Stage A smoke test
+        env:
+          FEEDICO_TOKEN: ${{ secrets.FEEDICO_TOKEN }}
+          COUPON_HUNTER_PROVIDER_STATE: .feedico-smoke-state.json
         run: node collector/feedico-smoke.js promo-feed.json provider-diagnostics.json .feedico-smoke-state.json
 
       - name: Upload safe smoke artifacts
