@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__COUPON_HUNTER_PROMO_TESTER_V300__) return;
-  window.__COUPON_HUNTER_PROMO_TESTER_V300__ = true;
+  if (window.__COUPON_HUNTER_PROMO_TESTER_V333__) return;
+  window.__COUPON_HUNTER_PROMO_TESTER_V333__ = true;
 
   const P = globalThis.CouponHunterParser;
   const C = globalThis.CouponHunterCheckoutCore;
@@ -10,6 +10,7 @@
   const Engine = globalThis.CouponHunterVerifierEngine;
   const Limits = globalThis.CouponHunterPromoConstants || { HARD_LIVE_ATTEMPT_LIMIT: 50 };
   const MAX_CODES = Limits.HARD_LIVE_ATTEMPT_LIMIT;
+  const RECENT_PRODUCT_CONTEXT_TTL_MS = 30 * 60 * 1000;
   const APPLY_WORD = /(?:^|\b|\s)(?:apply|redeem|use|применить|активировать|использовать)(?:\b|\s|$)/i;
   const REMOVE_WORD = /(?:^|\b|\s)(?:remove|clear|delete|удалить|убрать|очистить)(?:\b|\s|$)/i;
   const PROMO_WORD = /(?:promo(?:\s*code)?|coupon|voucher|discount(?:\s*code)?|code|промокод|купон|скидк|код\s*скидки)/i;
@@ -18,9 +19,38 @@
   let running = false;
   let cancelRequested = false;
   let summaryRootCache = null;
+  let recentProductContextCache = null;
 
   const normalize = C.normalize;
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function sanitizeRecentProductContext(value) {
+    if (!value || typeof value !== 'object' || !/^\d{6,24}$/.test(String(value.itemId || '')) || !/^[A-Za-z0-9_-]{1,100}$/.test(String(value.skuId || ''))) return null;
+    if (!Number.isFinite(Number(value.price)) || !String(value.currency || '').match(/^[A-Z]{3}$/) || !Number.isFinite(Number(value.timestamp))) return null;
+    return {
+      itemId: String(value.itemId), skuId: String(value.skuId),
+      titleHash: typeof value.titleHash === 'string' ? value.titleHash.slice(0, 32) : null,
+      variantHash: typeof value.variantHash === 'string' ? value.variantHash.slice(0, 32) : null,
+      price: Number(value.price), currency: String(value.currency), timestamp: Number(value.timestamp)
+    };
+  }
+
+  function setRecentProductContext(value) {
+    recentProductContextCache = sanitizeRecentProductContext(value); structuredItemCache = null;
+    return recentProductContextCache;
+  }
+
+  function recentProductContextState(now = Date.now()) {
+    const context = recentProductContextCache; const available = !!context;
+    const age = available ? Number(now) - context.timestamp : Infinity;
+    const fresh = available && age >= -5 * 60 * 1000 && age <= RECENT_PRODUCT_CONTEXT_TTL_MS;
+    return { available, fresh, context: fresh ? context : null };
+  }
+
+  async function refreshRecentProductContext() {
+    const stored = await chrome.storage.local.get('recentProductContext');
+    return setRecentProductContext(stored?.recentProductContext || null);
+  }
 
   function sanitizeFeedback(value) {
     return normalize(value)
@@ -252,6 +282,49 @@
     return link;
   }
 
+  function safeIdentityHash(value) { return P.identityTextHash(normalize(value)); }
+
+  function visibleCheckoutLines(scope) {
+    if (!scope.strong) return [];
+    const selector = '[data-testid*="line-item" i],[data-pl*="line-item" i],[data-testid*="order-item" i],[data-pl*="order-item" i],[data-testid*="cart-item" i],[data-pl*="cart-item" i],[class*="checkout-item" i],[class*="order-item" i],[class*="cart-item" i]';
+    const rawRoots = [...new Set(Array.from(document.querySelectorAll(selector)).filter(Safety.isVisible).slice(0, 120))];
+    const roots = rawRoots.filter((root) => !rawRoots.some((candidate) => candidate !== root && root.contains?.(candidate)));
+    const safeText = (element) => {
+      const text = normalize(element?.innerText || element?.textContent || element?.getAttribute?.('aria-label') || '');
+      if (!text || text.length > 260 || /(?:recipient|получател|телефон|phone|address|адрес|достав|shipping|итого|total|tax|налог)/i.test(text)) return null;
+      return text;
+    };
+    const findText = (root, selectors) => {
+      for (const childSelector of selectors) {
+        const element = root.querySelector?.(childSelector); const text = safeText(element);
+        if (text) return text;
+      }
+      return null;
+    };
+    const lines = [];
+    for (const root of roots) {
+      if (isRecommendationLink(root)) continue;
+      const title = findText(root, ['[data-testid*="title" i]', '[data-pl*="title" i]', '[class*="item-title" i]', '[class*="product-title" i]', 'a[href*="/item/"]']);
+      const variant = findText(root, ['[data-testid*="variant" i]', '[data-testid*="option" i]', '[data-pl*="variant" i]', '[class*="variant" i]', '[class*="sku-info" i]', '[class*="option" i]'])
+        ?.replace(/^(?:цвет|color|вариант|variant|variation|комплектация|configuration|версия|version|размер|size)\s*:\s*/i, '') || null;
+      const quantityElement = root.querySelector?.('input[name*="quant" i],input[id*="quant" i],input[aria-label*="quant" i],select[name*="quant" i],[data-quantity]');
+      const quantityText = attributeFrom(root, ['data-quantity']) || quantityElement?.value || normalize(root.innerText || root.textContent || '').match(/(?:qty|quantity|кол(?:-?во|ичество)|×|x)\s*[:×x]?\s*(\d{1,3})(?:\s|$)/i)?.[1];
+      const quantity = quantityText !== null && quantityText !== undefined && quantityText !== '' && Number.isFinite(Number(quantityText)) && Number(quantityText) > 0 && Number(quantityText) <= 999 ? Number(quantityText) : null;
+      let price = null; let currency = null;
+      const priceSelectors = ['[data-testid*="line-price" i]', '[data-testid*="item-price" i]', '[data-pl*="line-price" i]', '[data-pl*="item-price" i]', '[class*="line-price" i]', '[class*="item-price" i]', '[class*="product-price" i]'];
+      for (const priceSelector of priceSelectors) {
+        const element = root.querySelector?.(priceSelector); const text = normalize(element?.innerText || element?.textContent || '');
+        if (!text || text.length > 120 || /(?:shipping|delivery|достав|итого|total|tax|налог)/i.test(text)) continue;
+        const quotes = P.extractPriceQuotes(text, 'CHECKOUT_LINE').filter((row) => !row.isRange && row.currency);
+        if (quotes.length !== 1) continue;
+        price = quotes[0].value; currency = quotes[0].currency; break;
+      }
+      if (!(title || variant || Number.isFinite(quantity) || Number.isFinite(price))) continue;
+      lines.push({ titleHash: safeIdentityHash(title), variantHash: safeIdentityHash(variant), quantity, price, currency });
+    }
+    return lines;
+  }
+
   function checkoutIdentityScopeEvidence() {
     const pageType = P.parsePageType(location.href); const evidenceTypes = [];
     const routeMatched = ['CART', 'CHECKOUT'].includes(pageType); if (routeMatched) evidenceTypes.push(`CHECKOUT_${pageType}_ROUTE`);
@@ -269,16 +342,68 @@
   }
 
   let structuredItemCache = null;
-  let lastStructuredDiagnostics = { structuredCandidateCount: 0, structuredCheckoutScopedCount: 0, structuredUniqueItemIds: 0, structuredUniqueSkuIds: 0, structuredConflicts: [], structuredEvidenceTypes: [] };
-  function structuredCheckoutItems(visibleIds, scope = checkoutIdentityScopeEvidence()) {
+  function emptyStructuredDiagnostics(scopeEvidence = []) {
+    const recent = recentProductContextState();
+    return {
+      structuredCandidateCount: 0, structuredCheckoutScopedCount: 0, structuredUniqueItemIds: 0, structuredUniqueSkuIds: 0,
+      structuredConflicts: [], structuredEvidenceTypes: scopeEvidence.slice(),
+      recentProductContextAvailable: recent.available, recentProductContextFresh: recent.fresh,
+      recentProductExactItemMatchCount: 0, recentProductExactSkuMatchCount: 0,
+      visibleLineCount: 0, visibleLinesWithTitle: 0, visibleLinesWithVariant: 0, visibleLinesWithQuantity: 0, visibleLinesWithPrice: 0,
+      structuredMatchedLineCount: 0, structuredUnmatchedCandidateCount: 0, winningEvidenceTypes: []
+    };
+  }
+  let lastStructuredDiagnostics = emptyStructuredDiagnostics();
+
+  function correlationEvidence(group, line, recentState) {
+    const evidence = []; const skuId = group.skuIds.size === 1 ? [...group.skuIds][0] : null;
+    const recent = recentState.context;
+    const recentExactItem = !!(recent && group.itemId === recent.itemId);
+    const recentExactSku = !!(recent && skuId && skuId === recent.skuId);
+    const recentCompatible = recentExactItem && recentExactSku &&
+      !(line.variantHash && recent.variantHash && line.variantHash !== recent.variantHash) &&
+      !(Number.isFinite(line.price) && (line.currency !== recent.currency || Math.abs(line.price - recent.price) > 0.01));
+    const titleMatch = !!(line.titleHash && (group.titleHashes.has(line.titleHash) || (recentCompatible && recent.titleHash === line.titleHash)));
+    const variantMatch = !!(line.variantHash && (group.variantHashes.has(line.variantHash) || (recentCompatible && recent.variantHash === line.variantHash)));
+    const quantityMatch = Number.isFinite(line.quantity) && group.quantities.size === 1 && group.quantities.has(line.quantity);
+    const priceMatch = Number.isFinite(line.price) && (
+      [...group.prices].some((value) => Math.abs(value - line.price) <= 0.01) && (!group.currencies.size || group.currencies.has(line.currency)) ||
+      recentCompatible && Math.abs(recent.price - line.price) <= 0.01 && recent.currency === line.currency
+    );
+    if (titleMatch) evidence.push('TITLE_MATCH');
+    if (variantMatch) evidence.push('VARIANT_MATCH');
+    if (quantityMatch) evidence.push('QUANTITY_MATCH');
+    if (priceMatch) evidence.push('LINE_PRICE_MATCH');
+    if (recentExactItem && recentCompatible) evidence.push('RECENT_ITEM_MATCH');
+    if (recentExactSku && recentCompatible) evidence.push('RECENT_SKU_MATCH');
+    if (skuId) evidence.push('EXPLICIT_SKU');
+    const visibleCount = evidence.filter((value) => ['TITLE_MATCH', 'VARIANT_MATCH', 'QUANTITY_MATCH', 'LINE_PRICE_MATCH'].includes(value)).length;
+    const usesRecent = evidence.includes('RECENT_ITEM_MATCH') || evidence.includes('RECENT_SKU_MATCH');
+    const eligible = group.skuIds.size <= 1 && visibleCount >= 2 && (!usesRecent || (evidence.includes('RECENT_ITEM_MATCH') && evidence.includes('RECENT_SKU_MATCH')));
+    const score = visibleCount * 10 + (evidence.includes('RECENT_ITEM_MATCH') ? 3 : 0) + (evidence.includes('RECENT_SKU_MATCH') ? 3 : 0) + (skuId ? 2 : 0);
+    return { group, line, evidence, visibleCount, eligible, score };
+  }
+
+  function selectCorroboratedStructuredGroup(groups, visibleLines, recentState) {
+    if (groups.length < 2 || visibleLines.length !== 1) return null;
+    const ranked = groups.map((group) => correlationEvidence(group, visibleLines[0], recentState)).sort((a, b) => b.score - a.score);
+    const winner = ranked[0]; const runnerUp = ranked[1];
+    if (!winner?.eligible || !runnerUp || winner.score - runnerUp.score < 8) return null;
+    if (ranked.filter((row) => row.score === winner.score).length !== 1) return null;
+    return winner;
+  }
+
+  function structuredCheckoutItems(visibleIds, scope = checkoutIdentityScopeEvidence(), visibleLines = []) {
     if (!scope.strong && !visibleIds.size) {
-      lastStructuredDiagnostics = { structuredCandidateCount: 0, structuredCheckoutScopedCount: 0, structuredUniqueItemIds: 0, structuredUniqueSkuIds: 0, structuredConflicts: [], structuredEvidenceTypes: scope.evidenceTypes.slice() };
+      lastStructuredDiagnostics = emptyStructuredDiagnostics(scope.evidenceTypes);
       return [];
     }
     const scripts = Array.from(document.querySelectorAll('script[type="application/json"],script#__NEXT_DATA__,script[id*="data" i],script[id*="state" i],script[data-state],script[data-hydration]')).slice(0, 40);
     const pathname = (() => { try { return new URL(location.href).pathname; } catch (_) { return ''; } })();
+    const recentState = recentProductContextState();
     const visibleKey = [...visibleIds].sort().join(','); const lengths = scripts.map((script) => String(script.textContent || '').length); const scopeKey = `${scope.strong}|${scope.evidenceTypes.join(',')}`;
-    if (structuredItemCache?.pathname === pathname && structuredItemCache.visibleKey === visibleKey && structuredItemCache.scopeKey === scopeKey && structuredItemCache.scripts.length === scripts.length &&
+    const correlationKey = JSON.stringify({ visibleLines, recent: recentState.context });
+    if (structuredItemCache?.pathname === pathname && structuredItemCache.visibleKey === visibleKey && structuredItemCache.scopeKey === scopeKey && structuredItemCache.correlationKey === correlationKey && structuredItemCache.scripts.length === scripts.length &&
       structuredItemCache.scripts.every((script, index) => script === scripts[index] && structuredItemCache.lengths[index] === lengths[index])) {
       lastStructuredDiagnostics = structuredItemCache.diagnostics; return structuredItemCache.items;
     }
@@ -314,7 +439,17 @@
           const rawSku = field(value, ['skuId', 'sku_id', 'selectedSkuId', 'selected_sku_id', 'variantId', 'variant_id']);
           const rawQuantity = field(value, ['quantity', 'qty', 'buyCount', 'buy_count']);
           const quantity = Number.isFinite(Number(rawQuantity)) && Number(rawQuantity) > 0 && Number(rawQuantity) <= 999 ? Number(rawQuantity) : null;
-          accepted.push({ itemId, skuId: rawSku && /^[A-Za-z0-9_-]{1,100}$/.test(rawSku) ? rawSku : null, quantity, sellerId: null, rootEvidence: true, evidenceSource: 'STRUCTURED' });
+          const rawTitle = field(value, ['title', 'itemTitle', 'item_title', 'productTitle', 'product_title', 'name']);
+          const rawVariant = field(value, ['variant', 'variantName', 'variant_name', 'skuName', 'sku_name', 'selectedVariant', 'selected_variant', 'options']);
+          const rawCurrency = field(value, ['currency', 'currencyCode', 'currency_code', 'priceCurrency']);
+          const rawPrice = field(value, ['linePrice', 'line_price', 'itemPrice', 'item_price', 'salePrice', 'sale_price', 'price']);
+          const price = P.parseLocalizedNumber(rawPrice);
+          accepted.push({
+            itemId, skuId: rawSku && /^[A-Za-z0-9_-]{1,100}$/.test(rawSku) ? rawSku : null, quantity, sellerId: null,
+            titleHash: safeIdentityHash(rawTitle), variantHash: safeIdentityHash(rawVariant),
+            price: Number.isFinite(price) ? price : null, currency: /^[A-Z]{3}$/.test(String(rawCurrency || '').toUpperCase()) ? String(rawCurrency).toUpperCase() : null,
+            rootEvidence: true, evidenceSource: 'STRUCTURED'
+          });
         }
       }
       if (Array.isArray(value)) value.forEach((child) => walk(child, [...path, '[]']));
@@ -327,15 +462,25 @@
     }
     const grouped = new Map(); const conflicts = [];
     for (const row of accepted.slice(0, 300)) {
-      const group = grouped.get(row.itemId) || { itemId: row.itemId, skuIds: new Set(), quantities: new Set() };
-      if (row.skuId) group.skuIds.add(row.skuId); if (Number.isFinite(row.quantity)) group.quantities.add(row.quantity); grouped.set(row.itemId, group);
+      const group = grouped.get(row.itemId) || { itemId: row.itemId, skuIds: new Set(), quantities: new Set(), titleHashes: new Set(), variantHashes: new Set(), prices: new Set(), currencies: new Set() };
+      if (row.skuId) group.skuIds.add(row.skuId);
+      if (Number.isFinite(row.quantity)) group.quantities.add(row.quantity);
+      if (row.titleHash) group.titleHashes.add(row.titleHash);
+      if (row.variantHash) group.variantHashes.add(row.variantHash);
+      if (Number.isFinite(row.price)) group.prices.add(row.price);
+      if (row.currency) group.currencies.add(row.currency);
+      grouped.set(row.itemId, group);
     }
     for (const group of grouped.values()) {
       if (group.skuIds.size > 1) conflicts.push('CONFLICTING_SKU_IDS');
       if (group.quantities.size > 1) conflicts.push('CONFLICTING_QUANTITIES');
     }
-    if (!visibleIds.size && grouped.size > 1) conflicts.push('COMPETING_ITEM_IDS_WITHOUT_DOM_CORROBORATION');
-    const items = !visibleIds.size && grouped.size > 1 ? [] : [...grouped.values()].map((group) => ({
+    const groupedValues = [...grouped.values()];
+    const corroborated = !visibleIds.size ? selectCorroboratedStructuredGroup(groupedValues, visibleLines, recentState) : null;
+    if (!visibleIds.size && grouped.size > 1 && !corroborated) conflicts.push('COMPETING_ITEM_IDS_WITHOUT_DOM_CORROBORATION');
+    if (corroborated) { conflicts.push('COMPETING_ITEM_IDS_RESOLVED_BY_CORROBORATION'); corroborated.evidence.forEach((value) => evidenceTypes.add(value)); }
+    const selectedGroups = !visibleIds.size && grouped.size > 1 ? (corroborated ? [corroborated.group] : []) : groupedValues;
+    const items = selectedGroups.map((group) => ({
       itemId: group.itemId,
       skuId: group.skuIds.size === 1 ? [...group.skuIds][0] : null,
       quantity: group.quantities.size === 1 ? [...group.quantities][0] : null,
@@ -344,16 +489,29 @@
       evidenceSource: 'STRUCTURED'
     }));
     const uniqueSkus = new Set(accepted.map((row) => row.skuId).filter(Boolean));
+    const recent = recentState.context;
     const diagnostics = {
       structuredCandidateCount: candidateCount,
       structuredCheckoutScopedCount: scopedCount,
       structuredUniqueItemIds: grouped.size,
       structuredUniqueSkuIds: uniqueSkus.size,
       structuredConflicts: [...new Set(conflicts)],
-      structuredEvidenceTypes: [...evidenceTypes]
+      structuredEvidenceTypes: [...evidenceTypes],
+      recentProductContextAvailable: recentState.available,
+      recentProductContextFresh: recentState.fresh,
+      recentProductExactItemMatchCount: recent ? groupedValues.filter((group) => group.itemId === recent.itemId).length : 0,
+      recentProductExactSkuMatchCount: recent ? groupedValues.filter((group) => group.skuIds.has(recent.skuId)).length : 0,
+      visibleLineCount: visibleLines.length,
+      visibleLinesWithTitle: visibleLines.filter((line) => !!line.titleHash).length,
+      visibleLinesWithVariant: visibleLines.filter((line) => !!line.variantHash).length,
+      visibleLinesWithQuantity: visibleLines.filter((line) => Number.isFinite(line.quantity)).length,
+      visibleLinesWithPrice: visibleLines.filter((line) => Number.isFinite(line.price) && !!line.currency).length,
+      structuredMatchedLineCount: corroborated ? 1 : 0,
+      structuredUnmatchedCandidateCount: Math.max(0, grouped.size - (corroborated ? 1 : items.length)),
+      winningEvidenceTypes: corroborated ? corroborated.evidence.slice() : []
     };
     lastStructuredDiagnostics = diagnostics;
-    structuredItemCache = { pathname, visibleKey, scopeKey, scripts, lengths, items, diagnostics }; return items;
+    structuredItemCache = { pathname, visibleKey, scopeKey, correlationKey, scripts, lengths, items, diagnostics }; return items;
   }
 
   function mergeCheckoutItems(rows) {
@@ -376,6 +534,7 @@
     const itemRootSelector = '[data-item-id],[data-itemid],[data-product-id],[data-productid],[class*="cart-item" i],[class*="order-item" i],[data-testid*="cart-item" i],[data-testid*="order-item" i],[data-testid*="line-item" i],[data-testid*="product-item" i]';
     const raw = Array.from(document.querySelectorAll(selector)).filter(Safety.isVisible).slice(0, 600);
     const scope = checkoutIdentityScopeEvidence();
+    const visibleLines = visibleCheckoutLines(scope);
     const links = scope.strong ? visibleItemLinks() : [];
     const roots = [...new Set([...raw.map((element) => element.closest?.(itemRootSelector) || element), ...links.map(itemRootForLink)])]; const rows = [];
     for (const root of roots) {
@@ -393,7 +552,7 @@
       rows.push({ itemId, skuId, quantity, sellerId, rootEvidence, evidenceSource: 'DOM' });
     }
     const visibleIds = new Set(links.map(itemIdFromLink).filter(Boolean));
-    return mergeCheckoutItems([...rows, ...structuredCheckoutItems(visibleIds, scope)]);
+    return mergeCheckoutItems([...rows, ...structuredCheckoutItems(visibleIds, scope, visibleLines)]);
   }
 
   function selectedShippingMethod() {
@@ -463,7 +622,19 @@
         structuredUniqueItemIds: lastStructuredDiagnostics.structuredUniqueItemIds,
         structuredUniqueSkuIds: lastStructuredDiagnostics.structuredUniqueSkuIds,
         structuredConflicts: lastStructuredDiagnostics.structuredConflicts.slice(),
-        structuredEvidenceTypes: lastStructuredDiagnostics.structuredEvidenceTypes.slice()
+        structuredEvidenceTypes: lastStructuredDiagnostics.structuredEvidenceTypes.slice(),
+        recentProductContextAvailable: lastStructuredDiagnostics.recentProductContextAvailable,
+        recentProductContextFresh: lastStructuredDiagnostics.recentProductContextFresh,
+        recentProductExactItemMatchCount: lastStructuredDiagnostics.recentProductExactItemMatchCount,
+        recentProductExactSkuMatchCount: lastStructuredDiagnostics.recentProductExactSkuMatchCount,
+        visibleLineCount: lastStructuredDiagnostics.visibleLineCount,
+        visibleLinesWithTitle: lastStructuredDiagnostics.visibleLinesWithTitle,
+        visibleLinesWithVariant: lastStructuredDiagnostics.visibleLinesWithVariant,
+        visibleLinesWithQuantity: lastStructuredDiagnostics.visibleLinesWithQuantity,
+        visibleLinesWithPrice: lastStructuredDiagnostics.visibleLinesWithPrice,
+        structuredMatchedLineCount: lastStructuredDiagnostics.structuredMatchedLineCount,
+        structuredUnmatchedCandidateCount: lastStructuredDiagnostics.structuredUnmatchedCandidateCount,
+        winningEvidenceTypes: lastStructuredDiagnostics.winningEvidenceTypes.slice()
       },
       selectors: { inputFound: selectors.inputFound, applyFound: selectors.applyFound, revealFound: selectors.revealFound }
     };
@@ -667,9 +838,15 @@
   globalThis.CouponHunterPromoTester = {
     normalizeCodes, normalizeCandidateQueue, inputScore, scoreApplyControl, scoreRemoveControl, findApplyButton, findRemoveButton,
     readBreakdown, readCheckout, summaryRows, checkoutItems, selectedShippingMethod, appliedIndicator, existingPlatformCode, selectorDiagnostics, diagnostics,
-    checkoutContext, checkoutSurfaceEvidence, effectiveCheckoutBinding, safeWidgetDiagnostics, executeCommand,
+    checkoutContext, checkoutSurfaceEvidence, effectiveCheckoutBinding, safeWidgetDiagnostics, visibleCheckoutLines,
+    refreshRecentProductContext, setRecentProductContext, recentProductContextState, executeCommand,
     isForbiddenActionLabel: Safety.isForbiddenActionLabel
   };
+
+  refreshRecentProductContext().catch(() => {});
+  chrome.storage.onChanged?.addListener?.((changes, area) => {
+    if (area === 'local' && changes.recentProductContext) setRecentProductContext(changes.recentProductContext.newValue || null);
+  });
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const supported = new Set(['CH_PROMO_TESTER_STATUS', 'CH_TEST_PROMOS', 'CH_CANCEL_PROMO_TEST', 'CH_APPLY_BEST_PROMO', 'CH_GET_CHECKOUT_DIAGNOSTICS']);

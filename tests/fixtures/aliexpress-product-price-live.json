@@ -1,0 +1,19 @@
+{
+  "url": "https://aliexpress.ru/item/1005009780072336.html?sku_id=12000050136402711",
+  "itemId": "1005009780072336",
+  "skuId": "12000050136402711",
+  "selectedVariant": "With charge dock",
+  "title": "Wireless cleaning device",
+  "visible": {
+    "current": "8 923 ₽",
+    "old": "13 942 ₽",
+    "quantity": "1",
+    "quantityContext": "В корзине Перейти 1",
+    "delivery": "Доставка 468 ₽"
+  },
+  "expected": {
+    "price": 8923,
+    "oldPrice": 13942,
+    "currency": "RUB"
+  }
+}

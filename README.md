@@ -1,6 +1,14 @@
-# Coupon Hunter v3.3.2
+# Coupon Hunter v3.3.3
 
 Локальное расширение Manifest V3 для Chrome desktop и Яндекс Браузера на Chromium. Оно анализирует страницы AliExpress, хранит данные в `chrome.storage.local` и проверяет только явно найденные или введённые промокоды. Случайные коды не генерируются, brute force не выполняется.
+
+## Что исправлено в v3.3.3
+
+- Product price выбирается по semantic priority: текущая валютная SKU/product price имеет преимущество, а quantity/stepper/cart controls и неоднозначные bare numbers не могут победить только из-за класса `price`.
+- Current и old price различаются по дочерним current/sale и old/original/line-through признакам; числовой tie-break «меньшая цена побеждает» удалён.
+- После надёжного product parse локально сохраняется 30-минутный `recentProductContext` с item/SKU, ценой, валютой и hashes title/variant — без account/private data.
+- Competing checkout item IDs разрешаются только при уникальном сильном candidate, exact recent item+SKU и минимум двух независимых visible line corroborations; неоднозначность остаётся `WEAK`.
+- Checkout diagnostics показывают только безопасные counts/evidence types для correlation и не включают raw itemId, skuId, title или variant.
 
 ## Что исправлено в v3.3.2
 

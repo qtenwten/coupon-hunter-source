@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__COUPON_HUNTER_PRODUCT_V2__) return;
-  window.__COUPON_HUNTER_PRODUCT_V2__ = true;
+  if (window.__COUPON_HUNTER_PRODUCT_V333__) return;
+  window.__COUPON_HUNTER_PRODUCT_V333__ = true;
 
   const P = globalThis.CouponHunterParser;
   const Store = globalThis.CouponHunterStorage;
@@ -14,7 +14,7 @@
     ? `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(value)} ${currencySymbol(currency)}`.trim() : '—';
 
   async function saveSnapshot(product) {
-    if (!product?.itemId || !Number.isFinite(product.detectedPrice?.value)) return;
+    if (!product?.itemId || !Number.isFinite(product.detectedPrice?.value) || product.detectedPrice?.reliable !== true) return;
     const storageKey = `history:${product.key}`;
     const result = await chrome.storage.local.get([storageKey, 'watchlist']);
     const history = Array.isArray(result[storageKey]) ? result[storageKey] : [];
@@ -22,7 +22,10 @@
     const retainedHistory = Store.retainHistory(history, snapshot);
     const watchlist = Array.isArray(result.watchlist) ? result.watchlist : [];
     const updatedWatchlist = Store.updateWatchlistForProduct(watchlist, product);
-    await chrome.storage.local.set({ [storageKey]: retainedHistory, latestProduct: product, watchlist: updatedWatchlist });
+    const recentProductContext = P.buildRecentProductContext(product, Date.now());
+    const update = { [storageKey]: retainedHistory, latestProduct: product, watchlist: updatedWatchlist };
+    if (recentProductContext) update.recentProductContext = recentProductContext;
+    await chrome.storage.local.set(update);
     await Store.enforceHistoryBudget(2500);
     const candidates = Store.candidatesFromPromotions(product.promotions, Store.SOURCES.PRODUCT_PAGE);
     if (candidates.length) await Store.upsert(candidates);

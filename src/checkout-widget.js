@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__COUPON_HUNTER_CHECKOUT_WIDGET_V332__) return;
-  window.__COUPON_HUNTER_CHECKOUT_WIDGET_V332__ = true;
+  if (window.__COUPON_HUNTER_CHECKOUT_WIDGET_V333__) return;
+  window.__COUPON_HUNTER_CHECKOUT_WIDGET_V333__ = true;
 
   const Core = globalThis.CouponHunterCheckoutWidgetCore;
   const Checkout = globalThis.CouponHunterCheckoutCore;
@@ -153,7 +153,7 @@
 
   const controller = Core.createController({
     limits: Limits,
-    getContext: () => Tester.checkoutContext(),
+    getContext: async () => { await Tester.refreshRecentProductContext(); return Tester.checkoutContext(); },
     loadSession: async () => (await chrome.storage.local.get('promoTestSession')).promoTestSession || null,
     refreshFeed: async (force) => {
       const response = await runtimeMessage({ type: 'CH_REFRESH_PROMO_FEED', force: force === true });

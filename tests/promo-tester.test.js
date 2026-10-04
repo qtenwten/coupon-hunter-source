@@ -8,6 +8,7 @@ const box = load(
   'src/parser-core.js', 'src/checkout-core.js', 'src/verifier-engine.js', 'src/safety.js', 'src/storage.js', 'src/promo-tester.js'
 );
 const T = box.CouponHunterPromoTester;
+const P = box.CouponHunterParser;
 
 function checkoutFixtureDocument(data, { withIdentity = true, withLink = withIdentity, withStructured = withIdentity } = {}) {
   const heading = new FakeElement({ tag: 'h1', text: data.heading });
@@ -29,6 +30,47 @@ function checkoutFixtureDocument(data, { withIdentity = true, withLink = withIde
     return [];
   };
   return { heading, promo, input, order, total, decoys, link, script, querySelectorAll };
+}
+
+function correlationCheckoutDocument(data, { line = data.visibleLine, structuredState = data.structuredState, linePriceText = line?.price || null } = {}) {
+  const heading = new FakeElement({ tag: 'h1', text: 'Оформление заказа' });
+  const promo = new FakeElement({ tag: 'button', text: 'Ввести промокод' });
+  const input = new FakeElement({ tag: 'input', attrs: { 'aria-label': 'Promo code' } });
+  const order = new FakeElement({ tag: 'button', text: 'Оформить заказ' });
+  const total = new FakeElement({ text: data.total, attrs: { 'data-pl': 'order-total' } });
+  const script = new FakeElement({ tag: 'script', text: JSON.stringify(structuredState), attrs: { type: 'application/json' } });
+  const root = new FakeElement({ text: line ? `${line.title || ''} ${line.variant || ''} Количество: ${line.quantity ?? ''} ${linePriceText || ''}` : '', attrs: { 'data-testid': 'checkout-line-item' }, className: 'checkout-item' });
+  const title = line?.title ? new FakeElement({ text: line.title, attrs: { 'data-testid': 'item-title' } }) : null;
+  const variant = line?.variant ? new FakeElement({ text: line.variant, attrs: { 'data-testid': 'item-variant' } }) : null;
+  const quantity = Number.isFinite(line?.quantity) ? new FakeElement({ tag: 'input', attrs: { 'aria-label': 'Quantity' } }) : null;
+  if (quantity) quantity.value = String(line.quantity);
+  const price = linePriceText ? new FakeElement({ text: linePriceText, attrs: { 'data-testid': 'line-price' } }) : null;
+  root.querySelector = (selector) => {
+    if (/title/i.test(selector)) return title;
+    if (/(?:variant|option|sku-info)/i.test(selector)) return variant;
+    if (/quant|data-quantity/i.test(selector)) return quantity;
+    if (/(?:line-price|item-price|product-price)/i.test(selector)) return price;
+    return null;
+  };
+  const querySelectorAll = (selector) => {
+    if (selector === 'h1,h2,[role="heading"],[aria-level]') return [heading];
+    if (selector === 'button,[role="button"],summary' || selector === 'button,[role="button"],input[type="submit"]') return [promo, order];
+    if (selector === 'input') return [input];
+    if (selector.startsWith('[data-pl*="total"')) return [total];
+    if (selector.includes('[data-testid*="line-item"')) return line ? [root] : [];
+    if (selector.startsWith('script[type="application/json"')) return [script];
+    return [];
+  };
+  return { root, title, variant, quantity, price, script, querySelectorAll };
+}
+
+function recentContext(data, overrides = {}) {
+  const recent = data.recentProduct;
+  return {
+    itemId: recent.itemId, skuId: recent.skuId,
+    titleHash: P.identityTextHash(recent.title), variantHash: P.identityTextHash(recent.variant),
+    price: recent.price, currency: recent.currency, timestamp: Date.now(), ...overrides
+  };
 }
 
 function scopedControl(label, context = 'Promo code') {
@@ -264,6 +306,81 @@ test('competing structured checkout itemIds downgrade to no guessed identity', (
   t.equal(context.checkoutFingerprint.items.length, 0); t.equal(context.fingerprintQuality, 'WEAK');
   t.equal(context.diagnostics.structured.structuredUniqueItemIds, 2);
   t.ok(context.diagnostics.structured.structuredConflicts.includes('COMPETING_ITEM_IDS_WITHOUT_DOM_CORROBORATION'));
+  doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('recent product plus four visible line signals resolves one competing checkout item', (t) => {
+  const data = fixture('aliexpress-checkout-correlation-live.json'); const page = correlationCheckoutDocument(data);
+  const previousUrl = box.location.href; box.location.href = data.url; T.setRecentProductContext(recentContext(data)); doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext(); const diagnostics = context.diagnostics.structured;
+  t.equal(context.checkoutFingerprint.items.length, data.expected.itemCount); t.equal(context.fingerprintQuality, data.expected.fingerprint); t.equal(context.available, true);
+  t.equal(context.checkoutFingerprint.items[0].itemId, data.recentProduct.itemId); t.equal(context.checkoutFingerprint.items[0].skuId, data.recentProduct.skuId); t.equal(context.checkoutFingerprint.items[0].quantity, 1);
+  t.equal(diagnostics.recentProductContextAvailable, true); t.equal(diagnostics.recentProductContextFresh, true);
+  t.equal(diagnostics.recentProductExactItemMatchCount, 1); t.equal(diagnostics.recentProductExactSkuMatchCount, 1);
+  t.equal(diagnostics.visibleLineCount, 1); t.equal(diagnostics.structuredMatchedLineCount, 1); t.equal(diagnostics.structuredUnmatchedCandidateCount, 1);
+  for (const evidence of ['TITLE_MATCH', 'VARIANT_MATCH', 'QUANTITY_MATCH', 'LINE_PRICE_MATCH', 'RECENT_ITEM_MATCH', 'RECENT_SKU_MATCH', 'EXPLICIT_SKU']) t.ok(diagnostics.winningEvidenceTypes.includes(evidence), evidence);
+  const serialized = JSON.stringify(diagnostics); t.ok(!serialized.includes(data.recentProduct.itemId)); t.ok(!serialized.includes(data.recentProduct.skuId)); t.ok(!serialized.includes(data.recentProduct.title));
+  T.setRecentProductContext(null); doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('stale recent product context cannot resolve competing checkout items', (t) => {
+  const data = fixture('aliexpress-checkout-correlation-live.json'); const page = correlationCheckoutDocument(data); const previousUrl = box.location.href;
+  box.location.href = data.url; T.setRecentProductContext(recentContext(data, { timestamp: Date.now() - 31 * 60 * 1000 })); doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext();
+  t.equal(context.checkoutFingerprint.items.length, 0); t.equal(context.fingerprintQuality, 'WEAK');
+  t.equal(context.diagnostics.structured.recentProductContextAvailable, true); t.equal(context.diagnostics.structured.recentProductContextFresh, false);
+  T.setRecentProductContext(null); doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('recent product with different variant or price is ignored for correlation', (t) => {
+  const data = fixture('aliexpress-checkout-correlation-live.json'); const page = correlationCheckoutDocument(data); const previousUrl = box.location.href;
+  box.location.href = data.url; T.setRecentProductContext(recentContext(data, { variantHash: P.identityTextHash('Different option'), price: 9999 })); doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext();
+  t.equal(context.checkoutFingerprint.items.length, 0); t.equal(context.fingerprintQuality, 'WEAK'); t.equal(context.diagnostics.structured.structuredMatchedLineCount, 0);
+  T.setRecentProductContext(null); doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('recent item and SKU match without visible line corroboration is insufficient', (t) => {
+  const data = fixture('aliexpress-checkout-correlation-live.json'); const page = correlationCheckoutDocument(data, { line: null }); const previousUrl = box.location.href;
+  box.location.href = data.url; T.setRecentProductContext(recentContext(data)); doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext();
+  t.equal(context.checkoutFingerprint.items.length, 0); t.equal(context.fingerprintQuality, 'WEAK'); t.equal(context.diagnostics.structured.visibleLineCount, 0);
+  T.setRecentProductContext(null); doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+for (const [name, line] of [
+  ['title-only', { title: 'Wireless cleaning device' }],
+  ['price-only', { price: '8 923 ₽' }]
+]) {
+  test(`${name} checkout corroboration is insufficient`, (t) => {
+    const data = fixture('aliexpress-checkout-correlation-live.json'); const page = correlationCheckoutDocument(data, { line }); const previousUrl = box.location.href;
+    box.location.href = data.url; T.setRecentProductContext(recentContext(data)); doc.querySelectorAll = page.querySelectorAll;
+    const context = T.checkoutContext();
+    t.equal(context.checkoutFingerprint.items.length, 0); t.equal(context.fingerprintQuality, 'WEAK'); t.equal(context.diagnostics.structured.structuredMatchedLineCount, 0);
+    T.setRecentProductContext(null); doc.querySelectorAll = () => []; box.location.href = previousUrl;
+  });
+}
+
+test('two equally corroborated structured candidates remain WEAK', (t) => {
+  const data = fixture('aliexpress-checkout-correlation-live.json'); const metadata = { title: data.visibleLine.title, variant: data.visibleLine.variant, quantity: 1, price: 8923, currency: 'RUB' };
+  const structuredState = { checkoutItems: [
+    { itemId: '1005009780072336', skuId: 'SKU-A', ...metadata },
+    { itemId: '1005001111111111', skuId: 'SKU-B', ...metadata }
+  ] };
+  const page = correlationCheckoutDocument(data, { structuredState }); const previousUrl = box.location.href;
+  box.location.href = data.url; T.setRecentProductContext(null); doc.querySelectorAll = page.querySelectorAll;
+  const context = T.checkoutContext();
+  t.equal(context.checkoutFingerprint.items.length, 0); t.equal(context.fingerprintQuality, 'WEAK');
+  t.ok(context.diagnostics.structured.structuredConflicts.includes('COMPETING_ITEM_IDS_WITHOUT_DOM_CORROBORATION'));
+  doc.querySelectorAll = () => []; box.location.href = previousUrl;
+});
+
+test('order total and delivery option are never used as checkout line price', (t) => {
+  const data = fixture('aliexpress-checkout-correlation-live.json'); const previousUrl = box.location.href; box.location.href = data.url;
+  for (const value of ['Итого 8 923 ₽', 'Доставка 468 ₽']) {
+    const page = correlationCheckoutDocument(data, { line: { title: data.visibleLine.title }, linePriceText: value }); doc.querySelectorAll = page.querySelectorAll;
+    const lines = T.visibleCheckoutLines({ strong: true }); t.equal(lines.length, 1, value); t.equal(lines[0].price, null, value); t.equal(lines[0].currency, null, value);
+  }
   doc.querySelectorAll = () => []; box.location.href = previousUrl;
 });
 

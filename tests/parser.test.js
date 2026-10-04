@@ -93,7 +93,52 @@ test('product parser rejects shipping, tax, old and recommendation prices', (t) 
   t.ok(product.debug.priceCandidates.some((row) => row.context?.includes('Доставка')));
   t.ok(product.debug.priceCandidates.some((row) => row.context?.includes('Налог')));
   t.ok(product.debug.priceCandidates.some((row) => row.recommendation));
-  t.equal(product.parserVersion, '3.3.2');
+  t.equal(product.parserVersion, '3.3.3');
+});
+
+test('live product price semantics prefer current RUB price over quantity and delivery', (t) => {
+  const data = fixture('aliexpress-product-price-live.json');
+  const title = new FakeElement({ tag: 'h1', text: data.title, rect: { top: 80, left: 500 } });
+  const current = new FakeElement({ text: data.visible.current, className: 'price-current', style: { fontSize: '28px' }, rect: { top: 135, left: 520 } });
+  const old = new FakeElement({ tag: 'del', text: data.visible.old, className: 'price-original', style: { textDecorationLine: 'line-through' } });
+  const priceBlock = new FakeElement({ text: `${data.visible.current} ${data.visible.old}`, attrs: { 'data-pl': 'product-price' }, className: 'product-price', children: [current, old], style: { fontSize: '28px' } });
+  priceBlock.querySelectorAll = () => [current, old];
+  const quantity = new FakeElement({ text: data.visible.quantity, className: 'price HazeProductButtons__count' });
+  quantity.parentElement = new FakeElement({ text: data.visible.quantityContext, className: 'HazeProductButtons product-buttons cart-buttons' });
+  const delivery = new FakeElement({ text: data.visible.delivery, className: 'price delivery-price' });
+  delivery.parentElement = new FakeElement({ text: data.visible.delivery, className: 'delivery-options' });
+  const selected = new FakeElement({ text: `Variant: ${data.selectedVariant}`, attrs: { 'data-sku-id': data.skuId, 'aria-selected': 'true' } });
+  const doc = new FakeDocument({
+    h1: [title], '[data-sku-id][aria-selected="true"]': [selected], 'div,span,p,label': [selected],
+    '[data-pl="product-price"]': [priceBlock], '[class*="price" i]': [current, old, quantity, delivery],
+    'del,s,[class*="old-price" i],[class*="original-price" i],[class*="price--original" i]': [old], script: []
+  });
+  const product = P.parseProduct(doc, data.url);
+  t.equal(product.detectedPrice.value, data.expected.price); t.equal(product.detectedPrice.currency, data.expected.currency);
+  t.equal(product.oldPrice, data.expected.oldPrice); t.equal(product.detectedPrice.reliable, true);
+  t.equal(product.selectedVariant, data.selectedVariant);
+  const quantityCandidate = product.debug.priceCandidates.find((row) => row.value === 1);
+  t.equal(quantityCandidate?.eligible, false); t.equal(quantityCandidate?.rejectedReason, 'CONTROL_OR_QUANTITY_CONTEXT');
+  t.ok(!product.debug.priceCandidates.some((row) => row.value === 468 && row.confidence >= product.detectedPrice.confidence));
+});
+
+test('ambiguous bare-number-only product candidate requires verification', (t) => {
+  const quantity = new FakeElement({ text: '1', className: 'generic-price' });
+  const doc = new FakeDocument({ '[class*="price" i]': [quantity], 'div,span,p,label': [], script: [] });
+  const product = P.parseProduct(doc, 'https://aliexpress.ru/item/1005009780072336.html');
+  t.equal(product.detectedPrice.value, null); t.equal(product.detectedPrice.currency, null);
+  t.equal(product.detectedPrice.status, 'REQUIRES_VERIFICATION'); t.equal(product.detectedPrice.reliable, false);
+});
+
+test('recent product context is created only from reliable currency-bearing SKU price', (t) => {
+  const product = {
+    itemId: '1005009780072336', skuId: '12000050136402711', title: 'Wireless cleaning device', selectedVariant: 'With charge dock',
+    detectedPrice: { value: 8923, currency: 'RUB', confidence: 92, reliable: true }
+  };
+  const context = P.buildRecentProductContext(product, 123456);
+  t.equal(context.itemId, product.itemId); t.equal(context.skuId, product.skuId); t.equal(context.price, 8923); t.equal(context.currency, 'RUB'); t.equal(context.timestamp, 123456);
+  t.ok(context.titleHash && context.variantHash); t.ok(!JSON.stringify(context).includes(product.title)); t.ok(!JSON.stringify(context).includes(product.selectedVariant));
+  t.equal(P.buildRecentProductContext({ ...product, detectedPrice: { ...product.detectedPrice, reliable: false } }, 123456), null);
 });
 
 test('selected SKU price updates after a SKU change', (t) => {

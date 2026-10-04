@@ -1,8 +1,8 @@
 (() => {
   'use strict';
-  if (globalThis.CouponHunterParser?.parserVersion === '3.3.2') return;
+  if (globalThis.CouponHunterParser?.parserVersion === '3.3.3') return;
 
-  const PARSER_VERSION = '3.3.2';
+  const PARSER_VERSION = '3.3.3';
   const PROMOTION_TYPES = Object.freeze({
     PLATFORM_PROMO_CODE: 'PLATFORM_PROMO_CODE', ALIEXPRESS_COUPON: 'ALIEXPRESS_COUPON',
     SELLER_COUPON: 'SELLER_COUPON', STORE_DISCOUNT: 'STORE_DISCOUNT', SELECT_COUPON: 'SELECT_COUPON',
@@ -137,13 +137,13 @@
     const skuId = domSku || urlSku || null;
     const labels = [];
     const add = (value) => {
-      const text = normalizeSpace(value).replace(/^(?:цвет|color|вариант|variation|комплектация|configuration|версия|version|размер|size)\s*:\s*/i, '');
+      const text = normalizeSpace(value).replace(/^(?:цвет|color|вариант|variant|variation|комплектация|configuration|версия|version|размер|size)\s*:\s*/i, '');
       if (text && text.length <= 100 && !/^(true|selected|выбрано)$/i.test(text) && !labels.includes(text)) labels.push(text);
     };
     if (selected) add(selected.getAttribute('title') || selected.getAttribute('aria-label') || selected.textContent);
     for (const el of Array.from(doc.querySelectorAll('div,span,p,label')).slice(0, 4500)) {
       const text = normalizeSpace(el.textContent || '');
-      const match = text.match(/^(?:цвет|color|вариант|variation|комплектация|configuration|версия|version|размер|size)\s*:\s*(.{1,100})$/i);
+      const match = text.match(/^(?:цвет|color|вариант|variant|variation|комплектация|configuration|версия|version|размер|size)\s*:\s*(.{1,100})$/i);
       if (match && isVisible(el)) add(match[1]);
       if (labels.length >= 4) break;
     }
@@ -180,6 +180,40 @@
       if (/(recommend|related|similar|also.like|more.to.love|рекоменд|похож|с этим покуп)/i.test(signature)) return true;
     }
     return false;
+  }
+
+  function hasExplicitCurrency(text) {
+    const value = normalizeSpace(text);
+    return CURRENCIES.some((currency) => new RegExp(currency.token, 'iu').test(value));
+  }
+
+  function elementSignature(el, depthLimit = 4) {
+    const parts = []; let node = el;
+    for (let depth = 0; node && depth < depthLimit; depth += 1, node = node.parentElement) {
+      parts.push(node.tagName, node.id, node.className, node.getAttribute?.('role'), node.getAttribute?.('aria-label'), node.getAttribute?.('data-testid'), node.getAttribute?.('data-pl'), node.getAttribute?.('data-widget-cid'));
+    }
+    return normalizeSpace(parts.filter(Boolean).join(' '));
+  }
+
+  function priceControlContext(el, context) {
+    const signature = elementSignature(el);
+    const controlSignature = /(?:quantity|\bqty\b|counter|stepper|amount[-_\s]*selector|plus[-_\s]*minus|product[-_\s]*buttons?|cart[-_\s]*buttons?|add[-_\s]*to[-_\s]*cart)/i.test(signature);
+    const actionText = /(?:^|\s)(?:в\s+корзине|перейти|добавить(?:\s+в\s+корзину)?|add\s+to\s+cart|quantity|qty|количество)(?:\s|$)/i.test(context);
+    const buttonAncestor = /(?:^|\s)(?:BUTTON|button)(?:\s|$)/.test(signature) || /(?:button|spinbutton)/i.test(el?.getAttribute?.('role') || '');
+    return { matched: controlSignature || buttonAncestor || actionText, controlSignature, buttonAncestor, actionText };
+  }
+
+  function quoteChildSemantics(el, quote) {
+    const result = { old: isOldPrice(el), current: false };
+    const selector = 'del,s,[class*="old-price" i],[class*="original-price" i],[class*="price--original" i],[class*="sale-price" i],[class*="current-price" i],[class*="price--current" i],[data-pl*="current-price" i]';
+    for (const child of Array.from(el?.querySelectorAll?.(selector) || []).slice(0, 120)) {
+      const matches = extractPriceQuotes(child.textContent || child.getAttribute?.('aria-label') || '').some((candidate) =>
+        !candidate.isRange && !quote.isRange && Math.abs(candidate.value - quote.value) < 0.01 && (!candidate.currency || !quote.currency || candidate.currency === quote.currency));
+      if (!matches) continue;
+      if (isOldPrice(child) || /(?:old|original|price--original)/i.test(elementSignature(child, 2))) result.old = true;
+      if (/(?:sale|current|price--current)/i.test(elementSignature(child, 2)) && !isOldPrice(child)) result.current = true;
+    }
+    return result;
   }
 
   function addPriceCandidate(list, candidate) {
@@ -266,7 +300,13 @@
           else if (row.skuId && sku.skuId) confidence -= 40;
           if (/highPrice/i.test(row.key)) confidence -= 12;
           const skuAssociation = row.skuId && sku.skuId && String(row.skuId) === String(sku.skuId) ? 'EXPLICIT' : 'NONE';
-          addPriceCandidate(list, { value: row.value, min: row.value, max: row.value, isRange: false, currency: row.currency || declaredCurrency || null, source: /ldjson/.test(row.path) ? 'LD_JSON' : 'HYDRATION_JSON', confidence, raw: String(row.value), path: row.path, skuId: row.skuId || null, skuAssociation });
+          addPriceCandidate(list, {
+            value: row.value, min: row.value, max: row.value, isRange: false, currency: row.currency || declaredCurrency || null,
+            source: /ldjson/.test(row.path) ? 'LD_JSON' : 'HYDRATION_JSON', confidence, raw: String(row.value), path: row.path,
+            skuId: row.skuId || null, skuAssociation,
+            currentPrice: /^(?:price|salePrice|currentPrice|skuPrice|activityPrice|discountPrice)$/i.test(row.key),
+            rangeBoundary: /^(?:lowPrice|highPrice)$/i.test(row.key)
+          });
         }
       }
     }
@@ -298,13 +338,21 @@
           let confidence = sourceBase === 'VISIBLE_DOM' ? 42 : 48;
           const visible = isVisible(el); if (visible) confidence += 20;
           const signature = `${el.className || ''} ${el.getAttribute?.('data-pl') || ''} ${el.getAttribute?.('data-widget-cid') || ''}`;
-          if (/(product.price|sale.price|current|price--current)/i.test(signature)) confidence += 24;
+          const strongPriceSemantic = /(?:product.price|sale.price|current.price|price--current)/i.test(signature) ||
+            /(?:product-price|sale-price|price--current|price-current)/i.test(selector) || /(?:price|цена)/i.test(el.getAttribute?.('aria-label') || '');
+          if (strongPriceSemantic) confidence += 24;
           const context = localContext(el);
+          const controlContext = priceControlContext(el, context);
+          const currencyExplicit = hasExplicitCurrency(quote.raw);
+          const controlRejected = controlContext.controlSignature || controlContext.buttonAncestor || (!currencyExplicit && controlContext.actionText);
           if (/(shipping|delivery|достав|почт|курьер|самовывоз)/i.test(context)) confidence -= 75;
           if (/(tax|vat|ндс|налог|пошлин|тамож)/i.test(context)) confidence -= 70;
           if (/(cashback|кэшбэк|coins?|монет|купон|coupon|promo|промокод|эконом)/i.test(context)) confidence -= 48;
           if (/(installment|pay\s*in\s*\d|рассроч|в месяц|\/\s*мес)/i.test(context)) confidence -= 65;
-          if (isOldPrice(el)) confidence -= 65;
+          const quoteSemantics = quoteChildSemantics(el, quote);
+          if (quoteSemantics.old) confidence -= 65;
+          if (quoteSemantics.current) confidence += 18;
+          if (controlRejected) confidence -= 90;
           const recommendation = isRecommendation(el); if (recommendation) confidence -= 100;
           if (quote.isRange && sku.hasExplicitSelection) confidence -= 45;
           if (title && visible) {
@@ -318,7 +366,14 @@
           const skuAssociation = elementSkuId && sku.skuId && elementSkuId === String(sku.skuId) ? 'EXPLICIT' : sku.hasExplicitSelection && !elementSkuId ? 'INFERRED' : 'NONE';
           if (elementSkuId && sku.skuId && elementSkuId !== String(sku.skuId)) confidence -= 55;
           if (skuAssociation === 'EXPLICIT') confidence += 10;
-          addPriceCandidate(list, { ...quote, source: sourceBase, confidence, raw: quote.raw, context: context.slice(0, 220), selector, skuId: elementSkuId, skuAssociation, recommendation, oldPrice: isOldPrice(el), snippet: safeSnippet(el) });
+          const bareNumeric = !currencyExplicit && !quote.isRange;
+          const eligible = !controlRejected && !quoteSemantics.old && (!bareNumeric || strongPriceSemantic);
+          const rejectedReason = controlRejected ? 'CONTROL_OR_QUANTITY_CONTEXT' : quoteSemantics.old ? 'OLD_PRICE' : bareNumeric && !strongPriceSemantic ? 'AMBIGUOUS_BARE_NUMBER' : null;
+          addPriceCandidate(list, {
+            ...quote, source: sourceBase, confidence, raw: quote.raw, context: context.slice(0, 220), selector, skuId: elementSkuId, skuAssociation,
+            recommendation, oldPrice: quoteSemantics.old, currentPrice: quoteSemantics.current, strongPriceSemantic, currencyExplicit,
+            currencyEvidence: currencyExplicit ? 'EXPLICIT' : quote.currency ? 'PAGE_DEFAULT' : 'NONE', eligible, rejectedReason, snippet: safeSnippet(el)
+          });
         }
       }
     };
@@ -331,17 +386,36 @@
     if (!candidates.length) return null;
     const scored = candidates.map((row) => {
       const confirmations = candidates.filter((other) => other.currency === row.currency && !other.isRange && !row.isRange && Math.abs(other.value - row.value) < 0.01 && other.source !== row.source).length;
-      return { ...row, confidence: Math.max(0, Math.min(100, row.confidence + Math.min(12, confirmations * 4))) };
+      const currencyCorroboration = !row.currency && candidates.find((other) => other.currency && !other.isRange && !row.isRange && Math.abs(other.value - row.value) < 0.01 && other.eligible !== false && !other.oldPrice && !other.recommendation);
+      const enriched = currencyCorroboration ? { ...row, currency: currencyCorroboration.currency, currencyEvidence: 'CORROBORATED' } : row;
+      let semanticPriority = 0;
+      const structured = ['HYDRATION_JSON', 'LD_JSON', 'STRUCTURED_META'].includes(enriched.source);
+      const dom = ['VISIBLE_DOM', 'SEMANTIC_DOM'].includes(enriched.source);
+      if (structured && enriched.skuAssociation === 'EXPLICIT' && enriched.currency && !enriched.rangeBoundary) semanticPriority = 600;
+      else if (dom && enriched.currentPrice && enriched.currency) semanticPriority = 540;
+      else if (dom && enriched.strongPriceSemantic && enriched.currency) semanticPriority = 500;
+      else if (['LD_JSON', 'STRUCTURED_META'].includes(enriched.source) && enriched.currency) semanticPriority = 450;
+      else if (structured && enriched.currency && !enriched.rangeBoundary) semanticPriority = 420;
+      else if (structured && enriched.currency && enriched.rangeBoundary) semanticPriority = 330;
+      else if (dom && enriched.currencyExplicit) semanticPriority = 380;
+      else if (dom && enriched.currency) semanticPriority = 340;
+      else if (structured && enriched.skuAssociation === 'EXPLICIT' && !enriched.rangeBoundary) semanticPriority = 300;
+      else if (dom && enriched.strongPriceSemantic) semanticPriority = 220;
+      const confidence = Math.max(0, Math.min(100, enriched.confidence + Math.min(12, confirmations * 4)));
+      return { ...enriched, confidence, confirmations, semanticPriority };
     });
-    const exact = scored.filter((row) => !row.isRange && row.confidence >= 45 && !row.recommendation);
-    const pool = sku.hasExplicitSelection && exact.length ? exact : scored.filter((row) => row.confidence >= 20 && !row.recommendation);
-    return (pool.length ? pool : scored).sort((a, b) => b.confidence - a.confidence || Number(a.isRange) - Number(b.isRange) || (a.value || a.min) - (b.value || b.min))[0];
+    const eligible = scored.filter((row) => row.eligible !== false && !row.oldPrice && !row.recommendation && row.semanticPriority > 0 && row.confidence >= 20);
+    const exact = eligible.filter((row) => !row.isRange && row.confidence >= 45);
+    const pool = sku.hasExplicitSelection && exact.length ? exact : eligible;
+    return pool.sort((a, b) => b.semanticPriority - a.semanticPriority || b.confidence - a.confidence || Number(a.isRange) - Number(b.isRange) || b.confirmations - a.confirmations)[0] || null;
   }
 
   function detectedPriceFromWinner(winner, sku) {
-    if (!winner) return { value: null, currency: null, isRange: false, min: null, max: null, source: null, confidence: 0, skuAssociation: 'NONE', skuMatched: false };
+    if (!winner) return { value: null, currency: null, isRange: false, min: null, max: null, source: null, confidence: 0, skuAssociation: 'NONE', skuMatched: false, status: 'REQUIRES_VERIFICATION', reliable: false };
     const rangeWithoutSkuPrice = winner.isRange && sku.hasExplicitSelection;
-    return { value: rangeWithoutSkuPrice ? null : (winner.isRange ? winner.min : winner.value), currency: winner.currency || null, isRange: !!winner.isRange, min: winner.min ?? winner.value ?? null, max: winner.max ?? winner.value ?? null, source: winner.source, confidence: Math.round(winner.confidence), skuAssociation: winner.skuAssociation || 'NONE', skuMatched: winner.skuAssociation === 'EXPLICIT' };
+    const value = rangeWithoutSkuPrice ? null : (winner.isRange ? winner.min : winner.value);
+    const reliable = Number.isFinite(value) && !!winner.currency && winner.confidence >= 55 && winner.semanticPriority >= 300;
+    return { value, currency: winner.currency || null, isRange: !!winner.isRange, min: winner.min ?? winner.value ?? null, max: winner.max ?? winner.value ?? null, source: winner.source, confidence: Math.round(winner.confidence), skuAssociation: winner.skuAssociation || 'NONE', skuMatched: winner.skuAssociation === 'EXPLICIT', status: reliable ? 'DETECTED' : 'REQUIRES_VERIFICATION', reliable };
   }
 
   function findOldPrice(doc, detectedPrice) {
@@ -358,6 +432,22 @@
     let hash = 2166136261;
     for (const char of String(value)) { hash ^= char.charCodeAt(0); hash = Math.imul(hash, 16777619); }
     return (hash >>> 0).toString(36);
+  }
+
+  function identityTextHash(value) {
+    const normalized = normalizeSpace(value).toLocaleLowerCase('en-US').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    return normalized ? stableHash(normalized) : null;
+  }
+
+  function buildRecentProductContext(product, timestamp = Date.now()) {
+    const price = product?.detectedPrice;
+    const parsedTimestamp = Number(timestamp);
+    if (!product?.itemId || !product?.skuId || !Number.isFinite(price?.value) || !price?.currency || price?.reliable !== true || !Number.isFinite(parsedTimestamp)) return null;
+    return {
+      itemId: String(product.itemId), skuId: String(product.skuId),
+      titleHash: identityTextHash(product.title), variantHash: identityTextHash(product.selectedVariant),
+      price: price.value, currency: price.currency, timestamp: parsedTimestamp
+    };
   }
 
   function promotionType(title, code) {
@@ -488,7 +578,7 @@
     const winner = pickPriceCandidate(priceCandidates, sku); const detectedPrice = detectedPriceFromWinner(winner, sku);
     const oldPrice = findOldPrice(doc, detectedPrice);
     const promotionData = collectPromotions(doc, { itemId, skuId: sku.skuId, sellerId: seller.sellerId, currency: detectedPrice.currency });
-    const debugCandidates = priceCandidates.slice().sort((a, b) => b.confidence - a.confidence).slice(0, 30).map((row) => ({ value: row.value ?? null, currency: row.currency || null, isRange: !!row.isRange, min: row.min ?? null, max: row.max ?? null, source: row.source, confidence: Math.round(row.confidence), skuId: row.skuId || null, skuAssociation: row.skuAssociation || 'NONE', path: row.path || null, selector: row.selector || null, context: row.context || null, recommendation: !!row.recommendation, oldPrice: !!row.oldPrice, snippet: row.snippet || null }));
+    const debugCandidates = priceCandidates.slice().sort((a, b) => b.confidence - a.confidence).slice(0, 30).map((row) => ({ value: row.value ?? null, currency: row.currency || null, isRange: !!row.isRange, min: row.min ?? null, max: row.max ?? null, source: row.source, confidence: Math.round(row.confidence), skuId: row.skuId || null, skuAssociation: row.skuAssociation || 'NONE', path: row.path || null, selector: row.selector || null, context: row.context || null, recommendation: !!row.recommendation, oldPrice: !!row.oldPrice, currentPrice: !!row.currentPrice, rangeBoundary: !!row.rangeBoundary, currencyEvidence: row.currencyEvidence || null, strongPriceSemantic: !!row.strongPriceSemantic, eligible: row.eligible !== false, rejectedReason: row.rejectedReason || null, snippet: row.snippet || null }));
     return {
       pageType: parsePageType(url), itemId, skuId: sku.skuId, key: `${itemId || 'unknown'}:${sku.skuId || 'default'}`,
       title: parseTitle(doc), selectedVariant: sku.selectedVariant, seller: seller.title, sellerId: seller.sellerId,
@@ -500,5 +590,5 @@
     };
   }
 
-  globalThis.CouponHunterParser = { parserVersion: PARSER_VERSION, PROMOTION_TYPES, normalizeSpace, parseLocalizedNumber, extractPriceQuotes, extractMoney, parseItemId, selectedSkuInfo, normalizePromotion, extractPromotionsFromText, calculateDiscount, parsePageType, parseProduct, safeSnippet };
+  globalThis.CouponHunterParser = { parserVersion: PARSER_VERSION, PROMOTION_TYPES, normalizeSpace, identityTextHash, buildRecentProductContext, parseLocalizedNumber, extractPriceQuotes, extractMoney, parseItemId, selectedSkuInfo, normalizePromotion, extractPromotionsFromText, calculateDiscount, parsePageType, parseProduct, safeSnippet };
 })();
