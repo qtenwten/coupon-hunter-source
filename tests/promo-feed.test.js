@@ -88,9 +88,11 @@ test('unknown or downgraded feed schema is rejected', (t) => {
   payload.schemaVersion = 99; t.equal(errorOf(() => F.validateFeed(payload)), 'FEED_SCHEMA_UNSUPPORTED');
 });
 
-test('production feed is configured by default with exact URL, JWK and required signature', async (t) => {
+test('production feed is configured by default with exact direct HTTPS URL, JWK and required signature', async (t) => {
   const source = await F.configuredSource(new FakeStorage());
-  t.equal(source.url, 'https://qtenwten.github.io/coupon-hunter-source/promo-feed.json');
+  t.equal(source.url, 'https://qsen.ru/coupon-hunter-source/promo-feed.json');
+  t.equal(new URL(source.url).protocol, 'https:');
+  t.ok(!source.url.includes('qtenwten.github.io'));
   t.equal(source.requireSignature, true);
   t.deep(source.publicKeyJwk, { crv: 'Ed25519', x: 'G_ifdtSAuos7LGKdXjcIRjEsBZ8ZhYlRHWjaRlPUjSg', kty: 'OKP' });
   t.equal(JSON.stringify(Production.publicKeyJwk), JSON.stringify(source.publicKeyJwk));

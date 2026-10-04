@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Coupon Hunter — AliExpress Deal Finder",
-  "version": "3.2.1",
+  "version": "3.2.2",
   "description": "Собирает, ранжирует и безопасно проверяет известные промокоды AliExpress с измерением фактической экономии.",
   "permissions": [
     "storage",
@@ -13,7 +13,7 @@
     "https://aliexpress.com/*",
     "https://www.aliexpress.com/*",
     "https://*.aliexpress.com/*",
-    "https://qtenwten.github.io/*"
+    "https://qsen.ru/*"
   ],
   "content_scripts": [
     {

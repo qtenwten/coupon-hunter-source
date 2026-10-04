@@ -1,4 +1,4 @@
-# Coupon Hunter collector 3.2.1
+# Coupon Hunter collector 3.2.2
 
 Collector — отдельный Node.js data pipeline. Он не входит в Chrome extension и не получает корзину, SKU, total, аккаунт или browser history пользователя.
 
@@ -43,7 +43,7 @@ Extension использует production URL и public Ed25519 JWK из `src/pr
 
 ```json
 {
-  "url": "https://qtenwten.github.io/coupon-hunter-source/promo-feed.json",
+  "url": "https://qsen.ru/coupon-hunter-source/promo-feed.json",
   "requireSignature": true,
   "publicKeyJwk": { "crv": "Ed25519", "x": "G_ifdtSAuos7LGKdXjcIRjEsBZ8ZhYlRHWjaRlPUjSg", "kty": "OKP" }
 }

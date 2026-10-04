@@ -1,8 +1,8 @@
-# Coupon Hunter v3.2.1
+# Coupon Hunter v3.2.2
 
 Локальное расширение Manifest V3 для Chrome desktop и Яндекс Браузера на Chromium. Оно анализирует страницы AliExpress, хранит данные в `chrome.storage.local` и проверяет только явно найденные или введённые промокоды. Случайные коды не генерируются, brute force не выполняется.
 
-## Что добавлено в v3.2.1
+## Что добавлено в v3.2.2
 
 - `sourceClaims` compacted по `promo code + sourceGroup + sourceId`: сохраняются последнее наблюдение, first/last timestamps, observation count и максимум 8 material changes; до 32 claims на код.
 - Trust и corroboration считаются по независимым `sourceGroup`, повторные polls одного источника не повышают уверенность.
@@ -20,6 +20,7 @@
 - Production feed по умолчанию загружается с GitHub Pages и принимается только после fail-closed Ed25519 verification встроенным public JWK.
 - Production workflow каждые 6 часов строит feed с validity 18 часов, проводит quality gate и публикует только verified Pages artifact.
 - Production signing key загружается только из base64 PKCS8 secret и проходит Ed25519/public-JWK preflight до первого provider request.
+- Extension получает production feed напрямую с HTTPS custom domain `qsen.ru`, без зависимости от cross-origin redirect GitHub Pages.
 - Ручной GitHub Action `.github/workflows/feedico-smoke.yml` выполняет tests и Stage A Feedico smoke без публикации feed, cron, Pages или signing key.
 - Applicability Engine локально фильтрует только доказанные несовместимости по сроку, валюте, региону, товарам, продавцам и известному basis минимальной суммы.
 - Deterministic Queue Builder ранжирует ожидаемую выгоду, theoretical maximum, применимость, доверие, свежесть, независимые source groups и локальную историю.
@@ -63,7 +64,7 @@
 - `data/known-codes.json` — локальный data-only список. В репозитории он пуст, чтобы не выдавать устаревшие коды за актуальные.
 - `collector/` — отдельный Node.js collector, реальные credential-gated adapters, provider cursor/health, bounded retry, atomic feed builder и Ed25519 signing.
 
-Production feed URL зашит в extension: `https://qtenwten.github.io/coupon-hunter-source/promo-feed.json`. Разрешён только origin `https://qtenwten.github.io/*`; ручная настройка `promoFeedConfig` не требуется. Feed содержит только данные, не JavaScript, selectors или executable rules. Unsigned/tampered production payload отклоняется.
+Production feed URL зашит в extension: `https://qsen.ru/coupon-hunter-source/promo-feed.json`. Разрешён только origin `https://qsen.ru/*`; ручная настройка `promoFeedConfig` не требуется. Feed содержит только данные, не JavaScript, selectors или executable rules. Unsigned/tampered production payload отклоняется.
 
 ## Установка
 
