@@ -92,6 +92,12 @@
     if (currencies.size && context.currency && !currencies.has(String(context.currency).toUpperCase()) && reliable('claimedCurrency')) { eligibility = 'INELIGIBLE'; reasons.push('CURRENCY_MISMATCH'); }
     else if (currencies.size && !context.currency) { if (eligibility === 'ELIGIBLE') eligibility = 'UNKNOWN'; reasons.push('CURRENCY_UNKNOWN'); }
 
+    if (candidate.newUsersOnly === true) {
+      const reliableUserStatus = typeof context.isNewUser === 'boolean' && Number(context.newUserStatusConfidence || 0) >= 0.7;
+      if (reliableUserStatus && context.isNewUser === false) { eligibility = 'INELIGIBLE'; reasons.push('NEW_USER_ONLY'); }
+      else if (!reliableUserStatus) { if (eligibility === 'ELIGIBLE') eligibility = 'UNKNOWN'; reasons.push('NEW_USER_STATUS_UNKNOWN'); }
+    }
+
     const candidateItems = upperSet(candidate.itemIds); const checkoutItems = upperSet(context.itemIds);
     if (candidateItems.size && checkoutItems.size && !intersects(candidateItems, checkoutItems)) { eligibility = 'INELIGIBLE'; reasons.push('ITEM_MISMATCH'); }
     const candidateSellers = upperSet(candidate.sellerIds); const checkoutSellers = upperSet(context.sellerIds);
@@ -102,7 +108,8 @@
     const savings = estimateSaving(candidate, context); const confidence = confidenceFor(candidate, nowMs, context); const localMatch = localVerificationMatches(candidate, context);
     const applicabilityConfidence = eligibility === 'ELIGIBLE' ? 90 : eligibility === 'UNKNOWN' ? 50 : 100;
     const value = savings.estimatedSaving ?? savings.theoreticalMaxSaving ?? 0;
-    const rankScore = Math.round(value * 1000 + confidence.overall * 10 + applicabilityConfidence + (candidate.verificationStatus === 'VALID_APPLIED' && localMatch ? 5000 : 0));
+    const audiencePenalty = candidate.newUsersOnly === true && reasons.includes('NEW_USER_STATUS_UNKNOWN') ? 25 : 0;
+    const rankScore = Math.round(value * 1000 + confidence.overall * 10 + applicabilityConfidence - audiencePenalty + (candidate.verificationStatus === 'VALID_APPLIED' && localMatch ? 5000 : 0));
     return { eligibility, reasons, ...savings, applicabilityConfidence, confidence: confidence.overall, confidenceBreakdown: confidence.breakdown, rankScore };
   }
 

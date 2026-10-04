@@ -66,6 +66,25 @@ test('region mismatch filters only with reliable checkout region', (t) => {
   t.ok(I.assessCandidate(candidate, { region: null, regionConfidence: 0 }, { nowMs: NOW }).eligibility !== 'INELIGIBLE');
 });
 
+test('known non-new user is ineligible for a new-user-only code', (t) => {
+  const result = I.assessCandidate(promo('NEWONLY10', { newUsersOnly: true }), { isNewUser: false, newUserStatusConfidence: 0.95 }, { nowMs: NOW });
+  t.equal(result.eligibility, 'INELIGIBLE'); t.ok(result.reasons.includes('NEW_USER_ONLY'));
+});
+
+test('unknown user status stays unknown and general code wins an equal-value ranking tie', (t) => {
+  const restricted = promo('ANEWONLY', { newUsersOnly: true, discountType: 'FIXED', discountAmount: 100 });
+  const general = promo('ZGENERAL', { newUsersOnly: false, discountType: 'FIXED', discountAmount: 100 });
+  const assessment = I.assessCandidate(restricted, { isNewUser: null, newUserStatusConfidence: 0 }, { nowMs: NOW });
+  t.equal(assessment.eligibility, 'UNKNOWN'); t.ok(assessment.reasons.includes('NEW_USER_STATUS_UNKNOWN'));
+  const plan = I.buildQueue([restricted, general], {}, { nowMs: NOW });
+  t.equal(plan.queue[0].code, 'ZGENERAL');
+});
+
+test('unreliable non-new status cannot hard-filter a new-user-only code', (t) => {
+  const result = I.assessCandidate(promo('SOFTNEW10', { newUsersOnly: true }), { isNewUser: false, newUserStatusConfidence: 0.4 }, { nowMs: NOW });
+  t.equal(result.eligibility, 'UNKNOWN'); t.ok(result.reasons.includes('NEW_USER_STATUS_UNKNOWN'));
+});
+
 test('currency mismatch filters while unknown candidate currency remains', (t) => {
   t.equal(I.assessCandidate(promo('USD10', { currency: 'USD', currencies: ['USD'] }), { currency: 'RUB' }, { nowMs: NOW }).eligibility, 'INELIGIBLE');
   t.ok(I.assessCandidate(promo('ANY10'), { currency: 'RUB' }, { nowMs: NOW }).eligibility !== 'INELIGIBLE');

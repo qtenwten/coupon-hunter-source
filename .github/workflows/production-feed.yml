@@ -1,0 +1,65 @@
+name: Publish signed production feed
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 */6 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coupon-hunter-production-feed
+  cancel-in-progress: false
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Run regression suite without provider credentials
+        run: npm test
+
+      - name: Build, quality gate and verify signed production feed
+        env:
+          FEEDICO_TOKEN: ${{ secrets.FEEDICO_TOKEN }}
+          COUPON_HUNTER_FEED_PRIVATE_KEY: ${{ secrets.COUPON_HUNTER_FEED_PRIVATE_KEY }}
+        run: npm run collector:production
+
+      - name: Verify generated feed against bundled public JWK
+        run: npm run collector:verify-production
+
+      - name: Upload verified GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: .production-pages
+          retention-days: 1
+
+  deploy:
+    needs: build-and-verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Deploy verified feed to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

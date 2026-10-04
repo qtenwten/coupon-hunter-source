@@ -4,6 +4,7 @@ require('./storage.test');
 require('./promo-intelligence.test');
 require('./promo-feed.test');
 require('./feed-signature.test');
+require('./production-feed.test');
 require('../collector/tests/collector.test');
 require('../collector/tests/feedico.test');
 require('./page-adapter.test');

@@ -5,6 +5,7 @@
   const Limits = globalThis.CouponHunterPromoConstants;
   const Store = globalThis.CouponHunterStorage;
   const Signature = globalThis.CouponHunterFeedSignature;
+  const Production = globalThis.CouponHunterProductionFeedConfig;
   const BANNED_KEYS = new Set(['javascript', 'script', 'selector', 'cssselector', 'regex', 'eval', 'function', 'command', 'dynamicimport']);
   const byteLength = (value) => typeof TextEncoder === 'function' ? new TextEncoder().encode(value).length : unescape(encodeURIComponent(value)).length;
 
@@ -119,9 +120,9 @@
   }
   async function configuredSource(storage = chrome.storage.local) {
     const { promoFeedConfig = null } = await storage.get('promoFeedConfig');
-    if (promoFeedConfig?.url) return { url: validateFeedUrl(promoFeedConfig.url), requireSignature: promoFeedConfig.requireSignature !== false, publicKeyJwk: promoFeedConfig.publicKeyJwk || null };
     if (promoFeedConfig?.devMode && promoFeedConfig.localFixturePath && globalThis.chrome?.runtime?.getURL) return { url: chrome.runtime.getURL(promoFeedConfig.localFixturePath), requireSignature: false, publicKeyJwk: null };
-    return null;
+    if (!Production?.url || Production.requireSignature !== true || !Production.publicKeyJwk) return null;
+    return { url: validateFeedUrl(Production.url), requireSignature: true, publicKeyJwk: { ...Production.publicKeyJwk } };
   }
   async function configuredUrl(storage = chrome.storage.local) { return (await configuredSource(storage))?.url || null; }
   async function refreshConfigured(options = {}) {

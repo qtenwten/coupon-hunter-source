@@ -32,6 +32,27 @@ test('promotion candidates retain order applicability metadata', (t) => {
   t.equal(rows[0].itemId, '1'); t.equal(rows[0].skuId, '2');
 });
 
+test('newUsersOnly tri-state survives candidate normalization and conservative merge', (t) => {
+  t.equal(S.candidate({ code: 'NEWTRUE', source: S.SOURCES.REMOTE_JSON, newUsersOnly: true }).newUsersOnly, true);
+  t.equal(S.candidate({ code: 'KNOWNFALSE', source: S.SOURCES.REMOTE_JSON, newUsersOnly: false }).newUsersOnly, false);
+  t.equal(S.candidate({ code: 'UNKNOWNUSER', source: S.SOURCES.REMOTE_JSON, newUsersOnly: null }).newUsersOnly, null);
+  const unknownMerged = S.mergeCandidates(
+    S.candidate({ code: 'AUDIENCE10', source: S.SOURCES.REMOTE_JSON, newUsersOnly: false }),
+    S.candidate({ code: 'AUDIENCE10', source: S.SOURCES.PRODUCT_PAGE, newUsersOnly: null })
+  )[0];
+  t.equal(unknownMerged.newUsersOnly, null);
+  const restricted = S.mergeCandidates(unknownMerged, S.candidate({ code: 'AUDIENCE10', source: S.SOURCES.USER, newUsersOnly: true }))[0];
+  t.equal(restricted.newUsersOnly, true);
+});
+
+test('ambiguous monetary interpretation survives effective candidate merge even beside parsed terms', (t) => {
+  const remote = S.candidate({ code: 'AMBIGUOUS10', source: S.SOURCES.REMOTE_JSON, monetaryInterpretation: 'AMBIGUOUS', monetaryAmbiguityReasons: ['DISCOUNT_NOT_BELOW_MINIMUM_SPEND'], sourceClaims: [{ sourceId: 'feedico', sourceGroup: 'feedico', category: 'VERIFIED_PROVIDER', monetaryInterpretation: 'AMBIGUOUS', monetaryAmbiguityReason: 'DISCOUNT_NOT_BELOW_MINIMUM_SPEND' }] });
+  const effective = S.mergeCandidates(remote, S.candidate({ code: 'AMBIGUOUS10', source: S.SOURCES.USER, discountType: 'FIXED', discountAmount: 5 }))[0];
+  t.equal(effective.monetaryInterpretation, 'AMBIGUOUS');
+  t.deep(effective.monetaryAmbiguityReasons, ['DISCOUNT_NOT_BELOW_MINIMUM_SPEND']);
+  t.equal(effective.sourceClaims.find((claim) => claim.sourceId === 'feedico').monetaryInterpretation, 'AMBIGUOUS');
+});
+
 test('watchlist does not update every SKU when current product SKU is unknown', (t) => {
   const watchlist = [
     { itemId: 'ITEM', skuId: 'SKU-A', lastKnownPrice: 100 },

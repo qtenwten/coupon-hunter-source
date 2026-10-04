@@ -16,3 +16,4 @@ provider-diagnostics.json
 collector/promo-feed.json
 collector/.provider-state.json
 collector/*.tmp-*
+.production-pages/

@@ -14,12 +14,14 @@
   const LOCAL_CATEGORIES = new Set(['USER', 'PRODUCT_PAGE', 'MANUAL_CURATED']);
   const LOCAL_SOURCE_IDS = new Set([SOURCES.USER, SOURCES.PRODUCT_PAGE, SOURCES.SESSION_PAGE, SOURCES.KNOWN_LIST]);
   const CODE_RE = /^[A-Z0-9][A-Z0-9_-]{3,31}$/;
-  const CLAIM_FIELDS = ['claimedDiscountAmount', 'claimedDiscountPercent', 'claimedMaximumDiscount', 'claimedMinimumSpend', 'claimedMinimumSpendBasis', 'claimedCurrency', 'claimedRegions', 'claimedStartsAt', 'claimedExpiresAt', 'campaign'];
+  const CLAIM_FIELDS = ['claimedDiscountAmount', 'claimedDiscountPercent', 'claimedMaximumDiscount', 'claimedMinimumSpend', 'claimedMinimumSpendBasis', 'claimedCurrency', 'claimedRegions', 'monetaryInterpretation', 'monetaryAmbiguityReason', 'claimedStartsAt', 'claimedExpiresAt', 'campaign'];
   const now = () => new Date().toISOString();
   const finite = (value) => Number.isFinite(value) ? value : null;
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   const uniqueStrings = (values, max = 100) => [...new Set((Array.isArray(values) ? values : [values]).flat().filter((value) => value !== null && value !== undefined && String(value).trim()).map((value) => String(value).trim()).slice(0, max))];
   const safeDate = (value) => value && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
+  const triState = (value) => value === true ? true : value === false ? false : null;
+  const monetaryInterpretation = (value) => ['PARSED', 'AMBIGUOUS', 'UNKNOWN'].includes(value) ? value : 'UNKNOWN';
   const safeUrl = (value) => { try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) ? url.href.slice(0, 500) : null; } catch (_) { return null; } };
   const estimateBytes = (value) => { try { const text = JSON.stringify(value); return typeof TextEncoder === 'function' ? new TextEncoder().encode(text).length : unescape(encodeURIComponent(text)).length; } catch (_) { return 0; } };
 
@@ -52,6 +54,8 @@
       claimedMinimumSpendBasis: Limits.MINIMUM_SPEND_BASES.includes(input.claimedMinimumSpendBasis || fallback.minimumSpendBasis) ? (input.claimedMinimumSpendBasis || fallback.minimumSpendBasis) : 'UNKNOWN',
       claimedCurrency: input.claimedCurrency || fallback.discountCurrency || fallback.currency || null,
       claimedRegions: uniqueStrings(input.claimedRegions || fallback.regions || fallback.region, 50),
+      monetaryInterpretation: monetaryInterpretation(input.monetaryInterpretation || fallback.monetaryInterpretation),
+      monetaryAmbiguityReason: [input.monetaryAmbiguityReason, fallback.monetaryAmbiguityReason, fallback.monetaryAmbiguityReasons?.[0]].find((value) => typeof value === 'string' && value.trim())?.slice(0, 120) || null,
       claimedStartsAt: safeDate(input.claimedStartsAt || fallback.startsAt || fallback.startAt),
       claimedExpiresAt: safeDate(input.claimedExpiresAt || fallback.expiresAt),
       campaign: input.campaign || fallback.campaign || null,
@@ -160,8 +164,14 @@
     const firstSeenAt = safeDate(input.firstSeenAt || input.addedAt) || observations[0] || now();
     const lastSeenAt = activeObservations.at(-1) || safeDate(input.lastSeenAt) || firstSeenAt;
     const providerMetadata = (Array.isArray(input.providerMetadata) ? input.providerMetadata : []).filter((row) => row && typeof row === 'object').slice(0, 12).map((row) => ({ sourceId: row.sourceId ? String(row.sourceId).slice(0, 120) : null, recordId: row.recordId ? String(row.recordId).slice(0, 120) : null, store: row.store ? String(row.store).slice(0, 160) : null, brandName: row.brandName ? String(row.brandName).slice(0, 160) : null, firmName: row.firmName ? String(row.firmName).slice(0, 160) : null, source: row.source ? String(row.source).slice(0, 160) : null, rating: finite(row.rating), merchantWebsiteUrl: safeUrl(row.merchantWebsiteUrl) }));
+    const inputAmbiguityReasons = Array.isArray(input.monetaryAmbiguityReasons) ? input.monetaryAmbiguityReasons : input.monetaryAmbiguityReasons ? [input.monetaryAmbiguityReasons] : [];
+    const ambiguityReasons = uniqueStrings([...inputAmbiguityReasons, input.monetaryAmbiguityReason, ...active.map((claim) => claim.monetaryAmbiguityReason)], 20);
+    const hasResolvedMonetaryTerms = Number.isFinite(resolved.discountAmount) || Number.isFinite(resolved.discountPercent) || Number.isFinite(resolved.minimumSpend);
+    const hasAmbiguousMonetaryClaim = ambiguityReasons.length || input.monetaryInterpretation === 'AMBIGUOUS' || active.some((claim) => claim.monetaryInterpretation === 'AMBIGUOUS');
+    const effectiveMonetaryInterpretation = hasAmbiguousMonetaryClaim ? 'AMBIGUOUS' : hasResolvedMonetaryTerms ? 'PARSED' : monetaryInterpretation(input.monetaryInterpretation);
     return { schemaVersion: Limits.PROMO_SCHEMA_VERSION, code, type: input.type || 'PLATFORM_PROMO_CODE', ...resolved,
-      newUsersOnly: input.newUsersOnly === true, campaign: input.campaign || null, providerMetadata,
+      newUsersOnly: triState(input.newUsersOnly), monetaryInterpretation: effectiveMonetaryInterpretation, monetaryAmbiguityReasons: ambiguityReasons,
+      campaign: input.campaign || null, providerMetadata,
       itemIds: uniqueStrings([...(input.itemIds || []), input.itemId], 100), sellerIds: uniqueStrings([...(input.sellerIds || []), input.sellerId], 100),
       sourceClaims: claims, source: input.source || sourceIds[0] || SOURCES.USER, sources: sourceIds,
       title: input.title || null, region: input.region || resolved.regions[0] || null, currency: input.currency || resolved.currencies[0] || null,
@@ -176,8 +186,9 @@
   function mergeTwo(previous, row) {
     const sourceClaims = compactClaims([...(previous.sourceClaims || []), ...(row.sourceClaims || [])]);
     const latestVerification = row.lastVerifiedAt && (!previous.lastVerifiedAt || Date.parse(row.lastVerifiedAt) >= Date.parse(previous.lastVerifiedAt)) ? row : previous.lastVerifiedAt || previous.verificationStatus ? previous : row;
+    const mergedNewUsersOnly = previous.newUsersOnly === true || row.newUsersOnly === true ? true : previous.newUsersOnly === false && row.newUsersOnly === false ? false : null;
     return candidate({ ...previous, title: row.title || previous.title, type: row.type || previous.type,
-      newUsersOnly: previous.newUsersOnly || row.newUsersOnly, campaign: previous.campaign || row.campaign,
+      newUsersOnly: mergedNewUsersOnly, campaign: previous.campaign || row.campaign,
       providerMetadata: [...(previous.providerMetadata || []), ...(row.providerMetadata || [])].slice(0, 12),
       itemIds: uniqueStrings([...(previous.itemIds || []), ...(row.itemIds || [])]), sellerIds: uniqueStrings([...(previous.sellerIds || []), ...(row.sellerIds || [])]),
       regions: uniqueStrings([...(previous.regions || []), ...(row.regions || [])]), currencies: uniqueStrings([...(previous.currencies || []), ...(row.currencies || [])]),

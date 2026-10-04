@@ -1,13 +1,12 @@
-# Coupon Hunter collector 3.1.2
+# Coupon Hunter collector 3.2.0
 
 Collector — отдельный Node.js data pipeline. Он не входит в Chrome extension и не получает корзину, SKU, total, аккаунт или browser history пользователя.
 
-## Production build
+## Production publishing
 
-```sh
-# Credentials are supplied through the runtime environment and never stored here.
-npm run collector:build -- /absolute/path/to/promo-feed.json
-```
+`.github/workflows/production-feed.yml` запускается вручную и по cron `17 */6 * * *`. Tests идут без provider credentials. Только build-step получает `FEEDICO_TOKEN` и `COUPON_HUNTER_FEED_PRIVATE_KEY`, после чего runner повторно проверяет подпись public JWK без нового provider request. Production feed действует 18 часов.
+
+Pages artifact содержит только `promo-feed.json` и безопасный `health.json`. Generated files, provider state и private key не коммитятся.
 
 Cursor/state хранится отдельно в `collector/.provider-state.json` (путь можно заменить через `COUPON_HUNTER_PROVIDER_STATE`). Feed и state записываются через temporary file + rename. Неудачный fetch сохраняет claims предыдущего успешного snapshot; неудачная сборка/подпись не заменяет production feed.
 
@@ -36,21 +35,21 @@ Public feed — data-only schema v3:
   "generatedAt": "…",
   "expiresAt": "…",
   "promos": [],
-  "signature": { "algorithm": "Ed25519", "keyId": "production", "value": "…" }
+  "signature": { "algorithm": "Ed25519", "keyId": "feed-ed25519-2026-10-04", "value": "…" }
 }
 ```
 
-Extension принимает production HTTPS feed только при включённой проверке подписи (default для URL configuration). Public JWK должен быть передан в `promoFeedConfig.publicKeyJwk` при deployment; пока пара production-ключей не выпущена, remote ingestion намеренно fail-closed. Local fixture разрешён unsigned только при `devMode`.
+Extension использует production URL и public Ed25519 JWK из `src/production-feed-config.js`; production signature всегда обязательна и проверяется fail-closed. Local fixture разрешён unsigned только при explicit `devMode`.
 
 ```json
 {
-  "url": "https://your-approved-feed-host.example/path/feed.json",
+  "url": "https://qtenwten.github.io/coupon-hunter-source/promo-feed.json",
   "requireSignature": true,
-  "publicKeyJwk": { "kty": "OKP", "crv": "Ed25519", "x": "…" }
+  "publicKeyJwk": { "crv": "Ed25519", "x": "jBRSI-FTT51OwIpTN-6DI5kInmvhnoolJUdjcLn8_ac", "kty": "OKP" }
 }
 ```
 
-Нужно добавить в `host_permissions` только точный production origin. Feed download выполняется GET-only, без credentials/referrer, с timeout и лимитом 2 MiB. Collector держит promo payload ниже 1.8 MiB и пишет число отброшенных по byte budget строк в diagnostics.
+Feed download выполняется GET-only, без credentials/referrer, с timeout и лимитом 2 MiB. Collector держит promo payload ниже 1.8 MiB и пишет число отброшенных по byte budget строк в diagnostics.
 
 Local development:
 

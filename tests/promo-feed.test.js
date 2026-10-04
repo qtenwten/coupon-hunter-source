@@ -1,7 +1,10 @@
 const { test } = require('./harness');
 const { sandbox, load } = require('./helpers');
+const crypto = require('node:crypto');
+const { signFeed } = require('../collector/signature');
+const Production = require('../src/production-feed-config');
 
-const box = load(sandbox({ AbortController, TextEncoder }), 'src/promo-constants.js', 'src/storage.js', 'src/promo-feed.js');
+const box = load(sandbox({ AbortController, TextEncoder, crypto: crypto.webcrypto, atob: (value) => Buffer.from(value, 'base64').toString('binary') }), 'src/promo-constants.js', 'src/storage.js', 'src/production-feed-config.js', 'src/feed-signature.js', 'src/promo-feed.js');
 const L = box.CouponHunterPromoConstants;
 const F = box.CouponHunterPromoFeed;
 
@@ -85,7 +88,28 @@ test('unknown or downgraded feed schema is rejected', (t) => {
   payload.schemaVersion = 99; t.equal(errorOf(() => F.validateFeed(payload)), 'FEED_SCHEMA_UNSUPPORTED');
 });
 
-test('configured HTTPS feed requires a signature by default', async (t) => {
-  const storage = new FakeStorage({ promoFeedConfig: { url: 'https://feed.example/promos.json' } }); const source = await F.configuredSource(storage);
-  t.equal(source.requireSignature, true); t.equal(source.publicKeyJwk, null);
+test('production feed is configured by default with exact URL, JWK and required signature', async (t) => {
+  const source = await F.configuredSource(new FakeStorage());
+  t.equal(source.url, 'https://qtenwten.github.io/coupon-hunter-source/promo-feed.json');
+  t.equal(source.requireSignature, true);
+  t.deep(source.publicKeyJwk, { crv: 'Ed25519', x: 'jBRSI-FTT51OwIpTN-6DI5kInmvhnoolJUdjcLn8_ac', kty: 'OKP' });
+  t.equal(JSON.stringify(Production.publicKeyJwk), JSON.stringify(source.publicKeyJwk));
+});
+
+test('production config cannot be downgraded while local dev fixture remains available', async (t) => {
+  const overridden = await F.configuredSource(new FakeStorage({ promoFeedConfig: { url: 'https://unsigned.example/feed.json', requireSignature: false } }));
+  t.equal(overridden.url, Production.url); t.equal(overridden.requireSignature, true);
+  box.chrome = { runtime: { getURL: (path) => `chrome-extension://test/${path}` } };
+  const development = await F.configuredSource(new FakeStorage({ promoFeedConfig: { devMode: true, localFixturePath: 'data/promo-feed.dev.json' } }));
+  t.equal(development.url, 'chrome-extension://test/data/promo-feed.dev.json'); t.equal(development.requireSignature, false);
+});
+
+test('production signature policy rejects unsigned and tampered feed payloads', async (t) => {
+  let unsignedError = null;
+  try { await F.refreshConfigured({ storage: new FakeStorage(), fetchImpl: async () => response(feed(1)) }); } catch (error) { unsignedError = error.message; }
+  t.equal(unsignedError, 'FEED_SIGNATURE_INVALID');
+  const keys = crypto.generateKeyPairSync('ed25519'); const signed = signFeed(feed(1), keys.privateKey, 'test'); signed.promos[0].discountAmount = 999;
+  let tamperedError = null;
+  try { await F.fetchFeed('https://feed.example/promos.json', { requireSignature: true, publicKeyJwk: keys.publicKey.export({ format: 'jwk' }), fetchImpl: async () => response(signed) }); } catch (error) { tamperedError = error.message; }
+  t.equal(tamperedError, 'FEED_SIGNATURE_INVALID');
 });
