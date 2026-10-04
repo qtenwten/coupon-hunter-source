@@ -1,0 +1,6 @@
+{
+  "fixtureOnly": true,
+  "adapterEnabled": false,
+  "reason": "OAuth Data API approval and compliance review are required; HTML scraping is not used.",
+  "promos": []
+}

@@ -1,0 +1,40 @@
+name: Feedico smoke test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  feedico-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      FEEDICO_TOKEN: ${{ secrets.FEEDICO_TOKEN }}
+      COUPON_HUNTER_PROVIDER_STATE: .feedico-smoke-state.json
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run regression suite
+        run: npm test
+
+      - name: Run Feedico Stage A smoke test
+        run: node collector/feedico-smoke.js promo-feed.json provider-diagnostics.json .feedico-smoke-state.json
+
+      - name: Upload safe smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: feedico-smoke-${{ github.run_id }}
+          path: |
+            promo-feed.json
+            provider-diagnostics.json
+          if-no-files-found: warn
+          retention-days: 7

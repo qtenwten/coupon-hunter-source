@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Coupon Hunter</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header><div><b>Coupon Hunter</b><small>AliExpress Promo Intelligence v3.1.1</small></div><span id="dot">●</span></header>
+
+    <section class="finder">
+      <div class="sectionTitle">Найти выгодные предложения</div>
+      <form id="searchForm" class="searchRow">
+        <input id="query" type="search" placeholder="Например: Flydigi APEX 5" autocomplete="off">
+        <button id="searchBtn" type="submit">Найти</button>
+      </form>
+      <div id="searchStatus" class="caption">Соберём несколько предложений AliExpress и отсортируем по цене.</div>
+      <div id="results" class="results"></div>
+    </section>
+
+    <section class="promoLab">
+      <div class="sectionTitle">Проверка промокодов</div>
+      <div class="promoLibraryStats">
+        <span>База промокодов <b id="promoLibraryCount">0</b></span><span>После фильтрации <b id="promoEligibleCount">0</b></span><span>Будет проверено <b id="promoQueueCount">до 0</b></span>
+      </div>
+      <div id="promoSourceBreakdown" class="caption">Источники пока отсутствуют</div>
+      <div id="promoFeedAge" class="caption">Проверяю кэш базы…</div>
+      <button id="refreshPromoFeed" class="ghost feedButton">Обновить базу</button>
+      <label class="userCodesLabel" for="promoCodes">Пользовательские коды</label>
+      <textarea id="promoCodes" rows="3" placeholder="По одному коду в строке, например: SALE500"></textarea>
+      <div class="buttons promoButtons"><button id="savePromos" class="ghost">Добавить коды</button><button id="testPromos">Стандартная проверка</button><button id="deepPromos" class="ghost">Глубокая проверка</button><button id="cancelPromos" class="danger" hidden>Стоп</button></div>
+      <button id="applyBest" class="bestButton" hidden>Применить лучший проверенный код</button>
+      <div id="promoStatus" class="caption">Проверка запускается только вручную в корзине или checkout. Лучший код не применяется автоматически.</div>
+      <div id="promoResults" class="promoResults"></div>
+    </section>
+
+    <section id="main" class="currentCard">
+      <div class="sectionTitle">Открытая карточка</div>
+      <div id="title" class="title">Открой карточку товара AliExpress</div>
+      <div class="price"><span id="price">—</span><s id="old"></s></div>
+      <div id="promotion" class="promotion" hidden></div>
+      <div class="grid">
+        <span>SKU</span><b id="sku">—</b>
+        <span>Вариант</span><b id="variant">—</b>
+        <span>Продавец</span><b id="seller">—</b>
+        <span>Записей</span><b id="count">0</b>
+        <span>Минимум</span><b id="min">—</b>
+        <span>Максимум</span><b id="max">—</b>
+      </div>
+      <svg id="chart" viewBox="0 0 320 86" preserveAspectRatio="none" aria-label="История цены"></svg>
+      <div id="chartCaption" class="caption">История появится после нескольких изменений цены.</div>
+      <div class="buttons"><button id="rescan">Пересканировать</button><button id="scanPromos" class="ghost">Открыть скидки</button><button id="watchCurrent" class="ghost">Следить</button></div>
+      <div class="buttons"><button id="export" class="ghost">Экспорт товара</button><button id="exportDebug" class="ghost">Экспорт диагностики</button></div>
+    </section>
+
+    <section class="watchSection">
+      <div class="sectionTitle">Список наблюдения <span id="watchCount"></span></div>
+      <div id="watchlist" class="watchlist"><div class="caption">Добавьте товары кнопкой «Следить».</div></div>
+    </section>
+    <footer id="status">Данные хранятся только локально.</footer>
+  </main>
+  <script src="promo-constants.js"></script>
+  <script src="checkout-core.js"></script>
+  <script src="safety.js"></script>
+  <script src="storage.js"></script>
+  <script src="promo-intelligence.js"></script>
+  <script src="feed-signature.js"></script>
+  <script src="promo-feed.js"></script>
+  <script src="popup-promos.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

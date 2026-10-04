@@ -1,0 +1,47 @@
+{
+  "ok": true,
+  "recordCount": 4,
+  "page": 1,
+  "pageSize": 100,
+  "coupons": [
+    {
+      "id": "feedico-1",
+      "brandName": "AliExpress",
+      "firmName": "AliExpress Global",
+      "provider": "awin_affiliate",
+      "code": "ALI20",
+      "title": "20% off orders over $100",
+      "startsAt": "2026-10-01T00:00:00Z",
+      "endsAt": "2026-10-31T23:59:59Z",
+      "merchantWebsiteUrl": "https://www.aliexpress.com"
+    },
+    {
+      "id": "feedico-2",
+      "brandName": "AliExpress",
+      "provider": "cj_affiliate",
+      "code": "SAVE10",
+      "title": "$10 off orders over $80",
+      "startsAt": null,
+      "endsAt": "2026-12-31T23:59:59Z",
+      "merchantWebsiteUrl": "https://aliexpress.com"
+    },
+    {
+      "id": "feedico-3",
+      "brandName": "AliExpress",
+      "provider": "catalog",
+      "code": "MAYBE30",
+      "title": "Up to 30% off selected items",
+      "startsAt": null,
+      "endsAt": null,
+      "merchantWebsiteUrl": "https://www.aliexpress.com"
+    },
+    {
+      "id": "feedico-4",
+      "brandName": "Another Store",
+      "provider": "catalog",
+      "code": "OTHER10",
+      "title": "10% off",
+      "merchantWebsiteUrl": "https://example.com"
+    }
+  ]
+}

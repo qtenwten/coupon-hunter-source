@@ -1,0 +1,13 @@
+{
+  "name": "coupon-hunter-aliexpress",
+  "version": "3.1.1",
+  "private": true,
+  "description": "Local Chrome extension for AliExpress price, discount and coupon tracking",
+  "scripts": {
+    "test": "node tests/run.js && node tests/static-check.js",
+    "test:unit": "node tests/run.js",
+    "test:static": "node tests/static-check.js",
+    "collector:build": "node collector/build-feed.js",
+    "collector:feedico-smoke": "node collector/feedico-smoke.js promo-feed.json provider-diagnostics.json .feedico-smoke-state.json"
+  }
+}

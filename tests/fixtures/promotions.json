@@ -1,0 +1,36 @@
+{
+  "cases": [
+    {
+      "text": "Промокод: AEUS10 — скидка 500 ₽ при заказе от 5 000 ₽",
+      "code": "AEUS10",
+      "type": "PLATFORM_PROMO_CODE",
+      "discountAmount": 500,
+      "minimumSpend": 5000
+    },
+    {
+      "text": "Купон продавца 300 ₽ при заказе от 3 000 ₽",
+      "code": null,
+      "type": "SELLER_COUPON",
+      "discountAmount": 300,
+      "minimumSpend": 3000
+    },
+    {
+      "text": "Select coupon 5%",
+      "code": null,
+      "type": "SELECT_COUPON",
+      "discountPercent": 5
+    },
+    {
+      "text": "Монеты: скидка 2%",
+      "code": null,
+      "type": "COINS",
+      "discountPercent": 2
+    },
+    {
+      "text": "New user discount 15%",
+      "code": null,
+      "type": "NEW_USER_DISCOUNT",
+      "discountPercent": 15
+    }
+  ]
+}

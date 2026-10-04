@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 3,
+  "feedId": "coupon-hunter-aliexpress",
+  "revision": "development-empty",
+  "mode": "FULL_SNAPSHOT",
+  "merchant": "aliexpress",
+  "generatedAt": null,
+  "expiresAt": null,
+  "promos": [],
+  "diagnostics": {
+    "note": "Local development fixture only. No promo claims are bundled."
+  }
+}

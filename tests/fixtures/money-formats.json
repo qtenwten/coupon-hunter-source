@@ -1,0 +1,16 @@
+{
+  "exact": [
+    { "text": "1 299 ₽", "value": 1299, "currency": "RUB" },
+    { "text": "1 299,50 ₽", "value": 1299.5, "currency": "RUB" },
+    { "text": "₽ 1.299,90", "value": 1299.9, "currency": "RUB" },
+    { "text": "$19.99", "value": 19.99, "currency": "USD" },
+    { "text": "US $1,299.50", "value": 1299.5, "currency": "USD" },
+    { "text": "€19,99", "value": 19.99, "currency": "EUR" },
+    { "text": "1.299,50 EUR", "value": 1299.5, "currency": "EUR" }
+  ],
+  "ranges": [
+    { "text": "8 990–12 990 ₽", "min": 8990, "max": 12990, "currency": "RUB" },
+    { "text": "$19.99 to 29.50", "min": 19.99, "max": 29.5, "currency": "USD" },
+    { "text": "€19,99—€29,99", "min": 19.99, "max": 29.99, "currency": "EUR", "splitCurrency": true }
+  ]
+}

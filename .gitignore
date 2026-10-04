@@ -1,0 +1,18 @@
+.DS_Store
+node_modules/
+coverage/
+
+# Local credentials and signing material
+.env
+.env.*
+*.pem
+*.key
+*.p8
+
+# Generated collector/smoke state
+promo-feed.json
+provider-diagnostics.json
+.feedico-smoke-state.json
+collector/promo-feed.json
+collector/.provider-state.json
+collector/*.tmp-*

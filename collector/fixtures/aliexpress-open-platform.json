@@ -1,0 +1,6 @@
+{
+  "fixtureOnly": true,
+  "adapterEnabled": false,
+  "reason": "Credentials and API permission are required.",
+  "promos": []
+}

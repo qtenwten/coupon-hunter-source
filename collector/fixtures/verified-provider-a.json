@@ -1,0 +1,6 @@
+{
+  "fixtureOnly": true,
+  "adapterEnabled": false,
+  "reason": "No licensed machine-readable provider endpoint has been configured.",
+  "promos": []
+}

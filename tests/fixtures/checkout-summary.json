@@ -1,0 +1,16 @@
+{
+  "baseline": [
+    { "label": "Товары", "value": 9890, "currency": "RUB", "confidence": 80 },
+    { "label": "Доставка", "value": 300, "currency": "RUB", "confidence": 80 },
+    { "label": "Налог", "value": 100, "currency": "RUB", "confidence": 80 },
+    { "label": "Скидка", "value": 400, "currency": "RUB", "confidence": 80 },
+    { "label": "Итого к оплате", "value": 9890, "currency": "RUB", "confidence": 95 }
+  ],
+  "after": [
+    { "label": "Товары", "value": 9890, "currency": "RUB", "confidence": 80 },
+    { "label": "Доставка", "value": 300, "currency": "RUB", "confidence": 80 },
+    { "label": "Налог", "value": 100, "currency": "RUB", "confidence": 80 },
+    { "label": "Скидка", "value": 1640, "currency": "RUB", "confidence": 80 },
+    { "label": "Итого к оплате", "value": 8650, "currency": "RUB", "confidence": 95 }
+  ]
+}

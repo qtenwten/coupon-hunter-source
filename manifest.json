@@ -1,0 +1,74 @@
+{
+  "manifest_version": 3,
+  "name": "Coupon Hunter — AliExpress Deal Finder",
+  "version": "3.1.1",
+  "description": "Собирает, ранжирует и безопасно проверяет известные промокоды AliExpress с измерением фактической экономии.",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://aliexpress.ru/*",
+    "https://*.aliexpress.ru/*",
+    "https://aliexpress.com/*",
+    "https://www.aliexpress.com/*",
+    "https://*.aliexpress.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://aliexpress.ru/*",
+        "https://*.aliexpress.ru/*",
+        "https://aliexpress.com/*",
+        "https://www.aliexpress.com/*",
+        "https://*.aliexpress.com/*"
+      ],
+      "js": [
+        "src/promo-constants.js",
+        "src/parser-core.js",
+        "src/checkout-core.js",
+        "src/verifier-engine.js",
+        "src/safety.js",
+        "src/storage.js",
+        "src/page-adapter.js",
+        "src/search-content.js",
+        "src/promo-tester.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://aliexpress.ru/item/*",
+        "https://*.aliexpress.ru/item/*",
+        "https://aliexpress.com/item/*",
+        "https://www.aliexpress.com/item/*",
+        "https://*.aliexpress.com/item/*"
+      ],
+      "js": [
+        "src/promo-constants.js",
+        "src/safety.js",
+        "src/content.js"
+      ],
+      "css": [
+        "src/content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Coupon Hunter",
+    "default_popup": "src/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

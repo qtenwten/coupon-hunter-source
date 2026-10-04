@@ -1,0 +1,17 @@
+{
+  "cases": [
+    { "text": "This promo code is invalid", "status": "INVALID" },
+    { "text": "Срок действия промокода истёк", "status": "EXPIRED" },
+    { "text": "Promotion has not started yet", "status": "NOT_STARTED" },
+    { "text": "Минимальная сумма заказа не достигнута", "status": "MINIMUM_SPEND_NOT_MET" },
+    { "text": "Coupon does not apply to eligible items", "status": "NOT_APPLICABLE_TO_ITEMS" },
+    { "text": "Код недоступен в вашем регионе", "status": "REGION_RESTRICTED" },
+    { "text": "Only selected accounts are eligible", "status": "ACCOUNT_RESTRICTED" },
+    { "text": "Этот код уже использован", "status": "ALREADY_USED" },
+    { "text": "Coupon is fully redeemed", "status": "OUT_OF_STOCK" },
+    { "text": "Сначала получите купон", "status": "NOT_COLLECTED" },
+    { "text": "Too many attempts, try again later", "status": "RATE_LIMITED" },
+    { "text": "Security verification: verify you are human", "status": "CAPTCHA" },
+    { "text": "Неопознанное сообщение магазина", "status": null }
+  ]
+}

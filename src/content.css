@@ -1,0 +1,33 @@
+#coupon-hunter-panel {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  width: 300px;
+  z-index: 2147483646;
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+  color: #f6f6f6;
+  background: rgba(20, 20, 23, .94);
+  border: 1px solid rgba(255,255,255,.13);
+  border-radius: 14px;
+  box-shadow: 0 14px 45px rgba(0,0,0,.34);
+  backdrop-filter: blur(14px);
+  overflow: hidden;
+}
+#coupon-hunter-panel * { box-sizing: border-box; }
+#coupon-hunter-panel .ch-head { display:flex; align-items:center; justify-content:space-between; padding:11px 12px; border-bottom:1px solid rgba(255,255,255,.08); }
+#coupon-hunter-panel .ch-brand { font-weight:750; letter-spacing:.1px; }
+#coupon-hunter-panel .ch-status { font-size:11px; opacity:.72; }
+#coupon-hunter-panel .ch-body { padding:12px; }
+#coupon-hunter-panel .ch-title { font-size:12px; opacity:.76; max-height:34px; overflow:hidden; margin-bottom:8px; }
+#coupon-hunter-panel .ch-price { font-size:26px; line-height:1.05; font-weight:800; letter-spacing:-.5px; margin:3px 0; }
+#coupon-hunter-panel .ch-old { text-decoration:line-through; opacity:.55; margin-left:7px; font-weight:500; font-size:13px; }
+#coupon-hunter-panel .ch-promo { margin-top:9px; padding:8px 9px; border-radius:9px; color:#dfffc4; background:rgba(115,190,66,.15); font-size:11px; }
+#coupon-hunter-panel .ch-row { display:flex; justify-content:space-between; gap:10px; margin-top:7px; }
+#coupon-hunter-panel .ch-label { opacity:.58; }
+#coupon-hunter-panel .ch-value { text-align:right; max-width:190px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#coupon-hunter-panel .ch-actions { display:flex; gap:7px; margin-top:11px; }
+#coupon-hunter-panel button { flex:1; border:0; border-radius:9px; padding:8px 9px; cursor:pointer; background:#fff; color:#151515; font-weight:700; }
+#coupon-hunter-panel button.ch-secondary { background:rgba(255,255,255,.10); color:#fff; }
+#coupon-hunter-panel .ch-error { color:#ffb0a8; }
+#coupon-hunter-panel.ch-collapsed .ch-body { display:none; }
+#coupon-hunter-panel .ch-toggle { appearance:none; border:0; background:none; color:#fff; padding:0 2px; min-width:auto; flex:0; font-size:17px; opacity:.7; }
