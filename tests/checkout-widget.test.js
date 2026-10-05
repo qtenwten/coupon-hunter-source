@@ -205,8 +205,34 @@ test('session with 50 tested results survives restoreSession without truncation'
 
 test('history UI is scroll-bounded and production code contains no four/five-result truncation', (t) => {
   const core = fs.readFileSync(`${ROOT}/src/checkout-widget-core.js`, 'utf8'); const css = fs.readFileSync(`${ROOT}/src/content.css`, 'utf8'); const ui = fs.readFileSync(`${ROOT}/src/checkout-widget.js`, 'utf8');
-  t.ok(!core.includes('results.slice(-4)')); t.ok(!core.includes('recent.slice(-5)')); t.match(css, /max-height:min\(300px, 35vh\)/); t.match(css, /overflow-y:auto/);
+  t.ok(!core.includes('results.slice(-4)')); t.ok(!core.includes('recent.slice(-5)')); t.ok(!css.includes('max-height:min(300px, 35vh)')); t.match(css, /overflow-y:auto/);
   t.match(ui, /История проверки ·/); t.match(ui, /oldTop \+ Math\.max/);
+});
+
+test('checkout panel has fixed responsive outer height independent of result count', (t) => {
+  const css = fs.readFileSync(`${ROOT}/src/content.css`, 'utf8');
+  t.match(css, /#coupon-hunter-panel\[data-ch-surface="checkout"\]\s*\{[^}]*width:340px;[^}]*height:min\(680px, calc\(100vh - 36px\)\);[^}]*max-height:calc\(100vh - 36px\);[^}]*display:flex;[^}]*flex-direction:column;/);
+  t.match(css, /@media \(max-height:620px\)[\s\S]*height:calc\(100vh - 36px\)/);
+  t.ok(!/data-ch-state[^}]*height:/.test(css));
+});
+
+test('checkout body and history use shrinkable flex layout with internal results scrolling', (t) => {
+  const css = fs.readFileSync(`${ROOT}/src/content.css`, 'utf8');
+  t.match(css, /\.ch-checkout-body\s*\{[^}]*flex:1 1 auto;[^}]*min-height:0;[^}]*display:flex;[^}]*flex-direction:column;[^}]*overflow:hidden;/);
+  t.match(css, /\.ch-history\s*\{[^}]*flex:1 1 auto;[^}]*min-height:120px;[^}]*display:flex;[^}]*flex-direction:column;[^}]*overflow:hidden;/);
+  t.match(css, /\.ch-results\s*\{[^}]*flex:1 1 auto;[^}]*min-height:0;[^}]*overflow-y:auto;/);
+});
+
+test('history exists empty, action bar is outside its scroll and collapsed checkout is header-only', (t) => {
+  const ui = fs.readFileSync(`${ROOT}/src/checkout-widget.js`, 'utf8'); const css = fs.readFileSync(`${ROOT}/src/content.css`, 'utf8');
+  t.match(ui, /class="ch-history"[\s\S]*Результаты появятся здесь[\s\S]*(?:<\/div>\s*){4}<div class="ch-actions ch-checkout-actions"/);
+  t.match(css, /\.ch-checkout-actions\s*\{[^}]*flex:0 0 auto;/);
+  t.match(css, /data-ch-surface="checkout"\]\.ch-collapsed\s*\{[^}]*height:auto;[^}]*max-height:none;/);
+});
+
+test('product panel retains its original auto-height 300px base layout', (t) => {
+  const css = fs.readFileSync(`${ROOT}/src/content.css`, 'utf8');
+  t.match(css, /#coupon-hunter-panel\s*\{[^}]*width: 300px;/); t.ok(!/#coupon-hunter-panel\s*\{[^}]*height:/s.test(css));
 });
 
 test('manual country change rebuilds queue without starting verifier', async (t) => {

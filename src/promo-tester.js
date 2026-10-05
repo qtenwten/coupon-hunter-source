@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__COUPON_HUNTER_PROMO_TESTER_V340__) return;
-  window.__COUPON_HUNTER_PROMO_TESTER_V340__ = true;
+  if (window.__COUPON_HUNTER_PROMO_TESTER_V341__) return;
+  window.__COUPON_HUNTER_PROMO_TESTER_V341__ = true;
 
   const P = globalThis.CouponHunterParser;
   const C = globalThis.CouponHunterCheckoutCore;
