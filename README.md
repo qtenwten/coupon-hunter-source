@@ -1,6 +1,14 @@
-# Coupon Hunter v3.3.5
+# Coupon Hunter v3.3.6
 
 Локальное расширение Manifest V3 для Chrome desktop и Яндекс Браузера на Chromium. Оно анализирует страницы AliExpress, хранит данные в `chrome.storage.local` и проверяет только явно найденные или введённые промокоды. Случайные коды не генерируются, brute force не выполняется.
+
+## Что исправлено в v3.3.6
+
+- Реальный AliExpress RU icon-only Apply с exact `data-testid="buttonApply"` поддерживается отдельной строгой semantic-веткой без распознавания SVG/path.
+- `buttonApply` принимается только рядом с уже подтверждённым platform promo input, внутри единственного компактного promo-input wrapper и при отсутствии purchase/payment controls в этом scope.
+- Submit, disabled, hidden, `aria-disabled`, внешний/неоднозначный `buttonApply`, seller coupon и generic SVG-arrow fail closed.
+- Перед кликом повторно выполняется `isConfirmedPromoApplyControl`; затем централизованный `Safety.safeClick` требует Apply-семантику. Response capture по-прежнему запускается до клика.
+- Diagnostics показывают только безопасные count/evidence/testId/forbidden-label поля выбранного Apply и не экспортируют его className или DOM path.
 
 ## Что исправлено в v3.3.5
 

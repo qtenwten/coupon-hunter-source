@@ -118,6 +118,31 @@ function scopedControl(label, context = 'Promo code') {
   return { input, button, container };
 }
 
+function iconApplySurface(options = {}) {
+  const data = fixture('aliexpress-checkout-icon-apply.json');
+  const input = new FakeElement({ tag: 'input', attrs: { 'aria-label': options.unrelatedInput ? 'Search products' : data.input.ariaLabel } }); input.value = data.input.value;
+  const inputSpan = new FakeElement({ tag: 'span', children: [input] }); const svg = new FakeElement({ tag: 'svg' });
+  const makeButton = () => new FakeElement({ tag: 'button', text: options.label || '', attrs: { type: options.type || data.apply.type, ...(options.testId === null ? {} : { 'data-testid': options.testId || data.apply.testId }), ...(options.ariaDisabled ? { 'aria-disabled': 'true' } : {}) }, children: [svg], style: options.hidden ? { display: 'none' } : {} });
+  const buttons = options.multiple ? [makeButton(), makeButton()] : [makeButton()]; if (options.disabled) buttons[0].disabled = true;
+  const wrapperButtons = options.outside ? [] : buttons;
+  const wrapper = new FakeElement({ tag: data.wrapper.tag, text: 'Promo code', className: data.wrapper.className, children: [new FakeElement({ tag: 'span' }), inputSpan, ...wrapperButtons] });
+  const outer = new FakeElement({ tag: 'section', text: 'Promo code', children: options.outside ? [wrapper, ...buttons] : [wrapper] });
+  const query = (elements) => (selector) => {
+    if (selector === 'input') return [input];
+    if (selector.includes('button') || selector.includes('[role="button"]')) return elements;
+    return [];
+  };
+  inputSpan.querySelectorAll = query([]); wrapper.querySelectorAll = query(wrapperButtons); outer.querySelectorAll = query(buttons);
+  doc.querySelectorAll = (selector) => {
+    if (selector === 'input') return [input];
+    if (selector === 'button,[role="button"],input[type="submit"]' || selector === 'button,[role="button"],summary') return buttons;
+    return [];
+  };
+  return { data, input, button: buttons[0], buttons, wrapper, outer };
+}
+
+function resetPromoDocument() { doc.querySelectorAll = () => []; }
+
 test('verifier accepts normalized known/user codes and enforces hard cap 50', (t) => {
   const many = Array.from({ length: 70 }, (_, index) => `CODE${String(index).padStart(2, '0')}`);
   const normalized = T.normalizeCodes([...many, 'code00', 'bad!']);
@@ -150,6 +175,59 @@ for (const label of ['Use coins', 'Use points', 'Use balance', 'Use rewards', 'A
 test('explicit Apply code scores substantially above generic Apply', (t) => {
   const generic = scopedControl('Apply'); const explicit = scopedControl('Apply code');
   t.ok(T.scoreApplyControl(explicit.button, explicit.input) >= T.scoreApplyControl(generic.button, generic.input) + 50);
+});
+
+test('live icon-only buttonApply in the confirmed promo wrapper is selected', (t) => {
+  const surface = iconApplySurface(); const input = T.findPlatformPromoInput(); const selected = T.findApplyButton(input); const diagnostics = T.applyControlDiagnostics(input);
+  t.equal(input, surface.input); t.equal(input.value, 'DELD02'); t.equal(T.findPromoInputContainer(input), surface.wrapper);
+  t.equal(selected, surface.button); t.ok(T.scoreApplyControl(surface.button, input) >= 90); t.equal(T.isConfirmedPromoApplyControl(surface.button, input), true);
+  t.equal(diagnostics.applyCandidateCount, 1); t.equal(diagnostics.selectedApplyFound, true); t.equal(diagnostics.selectedApplyTestId, 'buttonApply');
+  t.deep(diagnostics.selectedApplyEvidenceTypes, surface.data.expectedEvidenceTypes); t.equal(diagnostics.selectedApplyForbiddenLabel, false);
+  const exported = T.selectorDiagnostics(); t.equal(exported.apply.testId, 'buttonApply'); t.equal(Object.hasOwn(exported.apply, 'class'), false); t.equal(Object.hasOwn(exported.apply, 'path'), false);
+  const capture = T.startPromoResponseCapture(input, selected); t.equal(capture.applyClicked, false); t.equal(T.clickConfirmedPromoApply(selected, input, capture), true);
+  const responseEvidence = T.updatePromoResponseCapture(capture); t.equal(responseEvidence.applyButtonFound, true); t.equal(responseEvidence.applyClicked, true); t.equal(selected.clicked, 1); T.finishPromoResponseCapture();
+  t.equal(T.existingPlatformCode(), null, 'a manually entered value is not an applied code'); resetPromoDocument();
+});
+
+test('buttonApply outside the promo input wrapper is rejected', (t) => {
+  const surface = iconApplySurface({ outside: true });
+  t.equal(T.findPromoInputContainer(surface.input), null); t.equal(T.findApplyButton(surface.input), null); t.equal(T.scoreApplyControl(surface.button, surface.input), -Infinity); resetPromoDocument();
+});
+
+test('buttonApply beside an unrelated input is rejected', (t) => {
+  const surface = iconApplySurface({ unrelatedInput: true });
+  t.equal(T.findPlatformPromoInput(), null); t.equal(T.findApplyButton(surface.input), null); t.equal(T.isAliExpressIconApply(surface.button, surface.input), false); resetPromoDocument();
+});
+
+for (const [name, options] of [
+  ['submit', { type: 'submit' }], ['disabled', { disabled: true }], ['hidden', { hidden: true }], ['aria-disabled', { ariaDisabled: true }]
+]) {
+  test(`${name} buttonApply is rejected`, (t) => {
+    const surface = iconApplySurface(options); t.equal(T.findApplyButton(surface.input), null); t.equal(T.isConfirmedPromoApplyControl(surface.button, surface.input), false); resetPromoDocument();
+  });
+}
+
+for (const label of ['Оформить заказ', 'Place Order', 'Pay Now']) {
+  test(`buttonApply with forbidden purchase label is rejected: ${label}`, (t) => {
+    const surface = iconApplySurface({ label }); const capture = T.startPromoResponseCapture(surface.input, surface.button);
+    t.equal(T.findApplyButton(surface.input), null); t.equal(T.scoreApplyControl(surface.button, surface.input), -Infinity);
+    t.equal(T.clickConfirmedPromoApply(surface.button, surface.input, capture), false); t.equal(surface.button.clicked || 0, 0); T.finishPromoResponseCapture(); resetPromoDocument();
+  });
+}
+
+test('generic SVG-only arrow without exact buttonApply semantics is rejected', (t) => {
+  const surface = iconApplySurface({ testId: null }); t.equal(T.findApplyButton(surface.input), null); t.equal(T.isAliExpressIconApply(surface.button, surface.input), false); resetPromoDocument();
+});
+
+test('multiple buttonApply candidates in one promo wrapper fail closed', (t) => {
+  const surface = iconApplySurface({ multiple: true }); const diagnostics = T.applyControlDiagnostics(surface.input);
+  t.equal(T.findApplyButton(surface.input), null); t.equal(diagnostics.applyCandidateCount, 2); t.equal(diagnostics.selectedApplyFound, false); resetPromoDocument();
+});
+
+test('seller coupon Apply on cart is not an icon platform promo control', (t) => {
+  const previousUrl = box.location.href; const sellerApply = new FakeElement({ tag: 'button', text: 'Apply seller coupon' }); box.location.href = 'https://aliexpress.ru/p/shoppingcart/index.html';
+  doc.querySelectorAll = (selector) => selector === 'button,[role="button"],input[type="submit"]' || selector === 'button,[role="button"],summary' ? [sellerApply] : [];
+  t.equal(T.findPlatformPromoInput(), null); t.equal(T.findApplyButton(null), null); t.equal(sellerApply.clicked || 0, 0); resetPromoDocument(); box.location.href = previousUrl;
 });
 
 for (const label of ['Remove', 'Remove code', 'Remove promo', 'Clear', 'Clear coupon', 'Удалить', 'Удалить промокод', 'Убрать', 'Очистить']) {

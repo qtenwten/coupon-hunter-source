@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__COUPON_HUNTER_PROMO_TESTER_V335__) return;
-  window.__COUPON_HUNTER_PROMO_TESTER_V335__ = true;
+  if (window.__COUPON_HUNTER_PROMO_TESTER_V336__) return;
+  window.__COUPON_HUNTER_PROMO_TESTER_V336__ = true;
 
   const P = globalThis.CouponHunterParser;
   const C = globalThis.CouponHunterCheckoutCore;
@@ -18,6 +18,8 @@
   const APPLIED_TEXT = /(?:promo(?:\s*code)?|coupon|voucher|discount|промокод|купон|скидк).{0,40}(?:applied|active|selected|примен[её]н|активирован|выбран)|(?:applied|примен[её]н[ао]?).{0,40}(?:promo|coupon|voucher|discount|промокод|купон|скидк)/i;
   const PLATFORM_PROMO_CONTROL = /(?:promo(?:tion)?\s*code|voucher\s*code|discount\s*code|промокод|код\s*скидки)/i;
   const GENERIC_COUPON_ACTION = /(?:apply|collect|get|use|применить|получить|использовать).{0,40}(?:coupon|купон)|(?:seller|store|item|продавц|магазин|товар).{0,40}(?:coupon|купон)/i;
+  const ALIEXPRESS_ICON_APPLY_TEST_ID = 'buttonApply';
+  const SAFE_APPLY_LABEL = /(?:^|\b|\s)(?:apply|redeem|use|применить|активировать|использовать)(?:\b|\s|$)|(?:^|\s)buttonApply(?:\s|$)/i;
   let running = false;
   let cancelRequested = false;
   let summaryRootCache = null;
@@ -203,6 +205,49 @@
     return [...new Set(result)];
   }
 
+  function controlTestId(control) { return String(control?.getAttribute?.('data-testid') || ''); }
+
+  function basicApplyControlSafety(control) {
+    const label = Safety.labelOf(control); const type = normalize(control?.getAttribute?.('type') || control?.type || '').toLowerCase();
+    const buttonRole = control?.tagName === 'BUTTON' || control?.getAttribute?.('role') === 'button';
+    return buttonRole && type !== 'submit' && Safety.isVisible(control) && !control.disabled && control.getAttribute?.('aria-disabled') !== 'true' && !Safety.isForbiddenActionLabel(label);
+  }
+
+  function compactPromoWrapper(node) {
+    if (!node || /^(?:BODY|HTML|MAIN)$/i.test(node.tagName || '') || !Safety.isVisible(node)) return false;
+    const text = normalize(node.innerText || node.textContent || ''); const rect = node.getBoundingClientRect?.() || {};
+    if (text.length > 800 || Number(rect.width) > 900 || Number(rect.height) > 360) return false;
+    const controls = Array.from(node.querySelectorAll?.('button,[role="button"],input[type="submit"]') || []).slice(0, 20);
+    if (controls.length > 6 || controls.some((control) => Safety.isForbiddenActionLabel(Safety.labelOf(control)))) return false;
+    const inputs = Array.from(node.querySelectorAll?.('input') || []).slice(0, 10);
+    return inputs.length <= 3;
+  }
+
+  function findPromoInputContainer(input) {
+    if (!input || findPlatformPromoInput() !== input) return null;
+    let node = input.parentElement;
+    for (let depth = 0; node && depth < 4; depth += 1, node = node.parentElement) {
+      if (/^(?:BODY|HTML|MAIN)$/i.test(node.tagName || '')) break;
+      const candidates = Array.from(node.querySelectorAll?.('button,[role="button"]') || []).filter((control) => controlTestId(control) === ALIEXPRESS_ICON_APPLY_TEST_ID);
+      const boundary = /^(?:LABEL|FORM)$/i.test(node.tagName || '');
+      const signature = normalize(`${node.className || ''} ${node.id || ''} ${node.getAttribute?.('data-testid') || ''} ${node.getAttribute?.('aria-label') || ''} ${node.innerText || node.textContent || ''}`);
+      const semanticWrapper = boundary || /(?:simpleinput|couponv2|promo|voucher)/i.test(signature) || PLATFORM_PROMO_CONTROL.test(signature);
+      if (candidates.length) {
+        if (candidates.length !== 1 || !semanticWrapper || !compactPromoWrapper(node) || !basicApplyControlSafety(candidates[0])) return null;
+        return node;
+      }
+      if (boundary) return null;
+    }
+    return null;
+  }
+
+  function isAliExpressIconApply(control, input) {
+    if (controlTestId(control) !== ALIEXPRESS_ICON_APPLY_TEST_ID || !basicApplyControlSafety(control)) return false;
+    const container = findPromoInputContainer(input); if (!container || !isWithin(container, control)) return false;
+    const candidates = Array.from(container.querySelectorAll?.('button,[role="button"]') || []).filter((element) => controlTestId(element) === ALIEXPRESS_ICON_APPLY_TEST_ID);
+    return candidates.length === 1 && candidates[0] === control;
+  }
+
   function localControlContext(control, depthLimit = 3) {
     const parts = []; let node = control;
     for (let depth = 0; node && depth < depthLimit; depth += 1, node = node.parentElement) {
@@ -215,8 +260,10 @@
   function scoreApplyControl(control, input, scoped = null) {
     const label = Safety.labelOf(control); const context = localControlContext(control);
     if (!Safety.isVisible(control) || control.disabled || control.getAttribute?.('aria-disabled') === 'true') return -Infinity;
+    const aliExpressIconApply = isAliExpressIconApply(control, input);
     const explicitPromoAction = PROMO_WORD.test(label);
-    if (Safety.isForbiddenActionLabel(label) || !APPLY_WORD.test(label) || NEGATIVE_APPLY.test(label) || (!explicitPromoAction && NEGATIVE_APPLY.test(context))) return -Infinity;
+    if (Safety.isForbiddenActionLabel(label) || (!aliExpressIconApply && !APPLY_WORD.test(label)) || NEGATIVE_APPLY.test(label) || (!aliExpressIconApply && !explicitPromoAction && NEGATIVE_APPLY.test(context))) return -Infinity;
+    if (aliExpressIconApply) return 260 + (normalize(control.getAttribute?.('type') || control.type || '').toLowerCase() === 'button' ? 20 : 0);
     let score = 55;
     if (explicitPromoAction) score += 100;
     if (PROMO_WORD.test(context)) score += 35;
@@ -229,6 +276,37 @@
     const scoped = scopedControls(input);
     return scoped.map((element) => ({ element, score: scoreApplyControl(element, input, scoped) }))
       .filter((row) => row.score >= 90).sort((a, b) => b.score - a.score)[0]?.element || null;
+  }
+
+  function isConfirmedPromoApplyControl(control, input) {
+    if (!control || !input || Safety.isForbiddenActionLabel(Safety.labelOf(control))) return false;
+    if (isAliExpressIconApply(control, input)) return true;
+    return scopedControls(input).includes(control) && scoreApplyControl(control, input) >= 90;
+  }
+
+  function clickConfirmedPromoApply(control, input, capture) {
+    if (!capture || !isConfirmedPromoApplyControl(control, input)) return false;
+    Safety.safeClick(control, { purpose: 'Применение промокода', intent: 'APPLY_PROMO', requirePattern: SAFE_APPLY_LABEL });
+    capture.applyClicked = true; return true;
+  }
+
+  function applyControlDiagnostics(input = findPlatformPromoInput()) {
+    const scoped = input ? scopedControls(input) : [];
+    const rawCandidates = scoped.filter((control) => controlTestId(control) === ALIEXPRESS_ICON_APPLY_TEST_ID || APPLY_WORD.test(Safety.labelOf(control)));
+    const selected = findApplyButton(input); const evidenceTypes = [];
+    if (selected && isAliExpressIconApply(selected, input)) {
+      evidenceTypes.push('DATA_TESTID_BUTTON_APPLY', 'SAME_PLATFORM_PROMO_CONTAINER');
+      if (normalize(selected.getAttribute?.('type') || selected.type || '').toLowerCase() === 'button') evidenceTypes.push('TYPE_BUTTON');
+    } else if (selected) {
+      evidenceTypes.push('TEXT_APPLY_ACTION', 'SCOPED_TO_PLATFORM_PROMO_INPUT');
+    }
+    return {
+      applyCandidateCount: rawCandidates.length,
+      selectedApplyFound: !!selected,
+      selectedApplyEvidenceTypes: evidenceTypes,
+      selectedApplyTestId: selected ? controlTestId(selected) || null : null,
+      selectedApplyForbiddenLabel: selected ? Safety.isForbiddenActionLabel(Safety.labelOf(selected)) : null
+    };
   }
 
   function scoreRemoveControl(control, { code = null, input = null, scoped = null } = {}) {
@@ -797,7 +875,8 @@
   function safeWidgetDiagnostics(context, checkout) {
     const fingerprint = checkout.fingerprint || {}; const items = fingerprint.items || [];
     let pathname = null; try { pathname = new URL(location.href).pathname; } catch (_) {}
-    const input = findPlatformPromoInput(); const reveal = findPlatformPromoRevealControl(); const selectors = { inputFound: !!input, applyFound: !!findApplyButton(input), revealFound: !!reveal };
+    const input = findPlatformPromoInput(); const reveal = findPlatformPromoRevealControl(); const applyDiagnostics = applyControlDiagnostics(input);
+    const selectors = { inputFound: !!input, applyFound: applyDiagnostics.selectedApplyFound, revealFound: !!reveal, ...applyDiagnostics };
     return {
       pathname,
       pageType: context.pageType,
@@ -836,7 +915,7 @@
         structuredUnmatchedCandidateCount: lastStructuredDiagnostics.structuredUnmatchedCandidateCount,
         winningEvidenceTypes: lastStructuredDiagnostics.winningEvidenceTypes.slice()
       },
-      selectors: { inputFound: selectors.inputFound, applyFound: selectors.applyFound, revealFound: selectors.revealFound }
+      selectors: { inputFound: selectors.inputFound, applyFound: selectors.applyFound, revealFound: selectors.revealFound, applyCandidateCount: selectors.applyCandidateCount, selectedApplyFound: selectors.selectedApplyFound, selectedApplyEvidenceTypes: selectors.selectedApplyEvidenceTypes.slice(), selectedApplyTestId: selectors.selectedApplyTestId, selectedApplyForbiddenLabel: selectors.selectedApplyForbiddenLabel }
     };
   }
 
@@ -919,9 +998,9 @@
     clickApply: async () => {
       const input = findPlatformPromoInput();
       const button = await waitForCondition(() => findApplyButton(input), 2500);
-      const capture = startPromoResponseCapture(input, button);
-      if (!button) return { ok: false, message: 'AliExpress не показал безопасную кнопку применения; результат кода не подтверждён', responseEvidence: updatePromoResponseCapture(capture) };
-      Safety.safeClick(button, { purpose: 'Применение промокода', intent: 'APPLY_PROMO' }); capture.applyClicked = true;
+      const confirmed = isConfirmedPromoApplyControl(button, input); const capture = startPromoResponseCapture(input, confirmed ? button : null);
+      if (!confirmed) return { ok: false, message: 'AliExpress не показал безопасную кнопку применения; результат кода не подтверждён', responseEvidence: updatePromoResponseCapture(capture) };
+      clickConfirmedPromoApply(button, input, capture);
       return { ok: true, responseEvidence: updatePromoResponseCapture(capture) };
     },
     observe: async (code) => {
@@ -967,9 +1046,11 @@
   }
 
   function selectorDiagnostics() {
-    const input = findPlatformPromoInput(); const apply = findApplyButton(input); const reveal = findPlatformPromoRevealControl();
+    const input = findPlatformPromoInput(); const apply = findApplyButton(input); const reveal = findPlatformPromoRevealControl(); const applyDiagnostics = applyControlDiagnostics(input);
     return {
-      inputFound: !!input, input: P.safeSnippet(input), applyFound: !!apply, apply: P.safeSnippet(apply), applyScore: apply ? scoreApplyControl(apply, input) : null,
+      inputFound: !!input, input: P.safeSnippet(input), applyFound: !!apply,
+      apply: apply ? { tag: String(apply.tagName || '').toLowerCase(), testId: controlTestId(apply) || null, ariaLabel: normalize(apply.getAttribute?.('aria-label') || '').slice(0, 120) || null } : null,
+      applyScore: apply ? scoreApplyControl(apply, input) : null, ...applyDiagnostics,
       revealFound: !!reveal, reveal: P.safeSnippet(reveal), existingPlatformCode: existingPlatformCode()
     };
   }
@@ -1048,7 +1129,7 @@
   }
 
   globalThis.CouponHunterPromoTester = {
-    normalizeCodes, normalizeCandidateQueue, inputScore, findPlatformPromoInput, findPlatformPromoRevealControl, ensurePromoInput, scoreApplyControl, scoreRemoveControl, findApplyButton, findRemoveButton,
+    normalizeCodes, normalizeCandidateQueue, inputScore, findPlatformPromoInput, findPlatformPromoRevealControl, ensurePromoInput, findPromoInputContainer, isAliExpressIconApply, isConfirmedPromoApplyControl, clickConfirmedPromoApply, applyControlDiagnostics, scoreApplyControl, scoreRemoveControl, findApplyButton, findRemoveButton,
     safePromoResponseText, promoResponseScope, collectPromoResponseFragments, startPromoResponseCapture, updatePromoResponseCapture, finishPromoResponseCapture,
     readBreakdown, readCheckout, summaryRows, checkoutItems, selectedShippingMethod, appliedIndicator, existingPlatformCode, selectorDiagnostics, diagnostics,
     checkoutContext, checkoutSurfaceEvidence, effectiveCheckoutBinding, safeWidgetDiagnostics, visibleCheckoutLines,

@@ -1,0 +1,20 @@
+{
+  "input": {
+    "ariaLabel": "Promo code",
+    "value": "DELD02"
+  },
+  "wrapper": {
+    "tag": "label",
+    "className": "SimpleInput CouponV2"
+  },
+  "apply": {
+    "tag": "button",
+    "type": "button",
+    "testId": "buttonApply"
+  },
+  "expectedEvidenceTypes": [
+    "DATA_TESTID_BUTTON_APPLY",
+    "SAME_PLATFORM_PROMO_CONTAINER",
+    "TYPE_BUTTON"
+  ]
+}
