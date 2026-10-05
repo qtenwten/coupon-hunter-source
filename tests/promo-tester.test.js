@@ -9,6 +9,7 @@ const box = load(
 );
 const T = box.CouponHunterPromoTester;
 const P = box.CouponHunterParser;
+const C = box.CouponHunterCheckoutCore;
 
 function checkoutFixtureDocument(data, { withIdentity = true, withLink = withIdentity, withStructured = withIdentity } = {}) {
   const heading = new FakeElement({ tag: 'h1', text: data.heading });
@@ -276,10 +277,35 @@ function responseSurface({ attribute = null, sourceId = 'promo-response', role =
   const input = new FakeElement({ tag: 'input', attrs }); const apply = new FakeElement({ tag: 'button', text: 'Apply' });
   const response = new FakeElement({ tag: 'div', text: '', attrs: role ? { role } : {}, className: 'promo-helper validation-message' });
   const container = new FakeElement({ tag: 'section', text: 'Promo code Apply', children: [input, apply, response] });
-  container.querySelectorAll = () => [response]; input.nextElementSibling = response;
+  container.querySelectorAll = (selector) => selector === 'input' ? [input] : selector.includes('button') || selector.includes('[role="button"]') ? [apply] : [response]; input.nextElementSibling = response;
   doc.getElementById = (id) => id === sourceId ? response : null;
-  doc.querySelectorAll = (selector) => selector === '[role="alert"],[aria-live]' && role ? [response] : [];
+  doc.querySelectorAll = (selector) => selector === 'input' ? [input] : selector === 'button,[role="button"],input[type="submit"]' || selector === 'button,[role="button"],summary' ? [apply] : selector === '[role="alert"],[aria-live]' && role ? [response] : [];
   return { input, apply, response, container };
+}
+
+function livePromoResponseSurface() {
+  const data = fixture('aliexpress-checkout-promo-response-live.json');
+  const input = new FakeElement({ tag: 'input', attrs: { 'aria-label': data.input.ariaLabel } }); input.value = data.input.value;
+  const svg = new FakeElement({ tag: 'svg' });
+  const apply = new FakeElement({ tag: 'button', attrs: { type: data.apply.type, 'data-testid': data.apply.testId }, children: [svg] });
+  const label = new FakeElement({ tag: 'label', text: 'Promo code', children: [input, apply] });
+  const inputWrap = new FakeElement({ tag: 'div', text: 'Promo code', className: 'inputWrap', children: [label] });
+  const outer = new FakeElement({ tag: 'div', text: 'Promo code', className: data.outer.className, children: [inputWrap] });
+  let response = null;
+  const scopedQuery = (selector) => {
+    if (selector === 'input') return [input];
+    if (selector.includes('button') || selector.includes('[role="button"]')) return [apply];
+    if (selector === '[role="alert"],[aria-live],[class*="helper" i],[class*="hint" i],[class*="error" i],[class*="tip" i],[class*="notice" i],[class*="validation" i],[data-testid*="error" i],[data-testid*="message" i]') return response ? [response] : [];
+    return [];
+  };
+  label.querySelectorAll = scopedQuery; inputWrap.querySelectorAll = scopedQuery; outer.querySelectorAll = scopedQuery;
+  doc.querySelectorAll = (selector) => selector === 'input' ? [input] : selector === 'button,[role="button"],input[type="submit"]' || selector === 'button,[role="button"],summary' ? [apply] : [];
+  return {
+    data, input, apply, label, inputWrap, outer,
+    addResponse(text = data.response.text, attrs = {}) {
+      response = new FakeElement({ tag: 'div', text, className: data.response.className, attrs }); response.parentElement = outer; outer.children.push(response); outer.textContent = outer.innerText = `Promo code ${text}`; return response;
+    }
+  };
 }
 
 function resetResponseSurface() {
@@ -287,12 +313,53 @@ function resetResponseSurface() {
 }
 
 test('promo-local observer captures newly changed helper text beside promo input', (t) => {
-  const surface = responseSurface(); T.startPromoResponseCapture(surface.input, surface.apply);
+  const surface = responseSurface(); const capture = T.startPromoResponseCapture(surface.input, surface.apply); T.clickConfirmedPromoApply(surface.apply, surface.input, capture);
   surface.response.textContent = surface.response.innerText = 'Промокод недоступен для этого заказа';
   FakeMutationObserver.instances.at(-1).trigger([{ target: surface.response, addedNodes: [], type: 'characterData' }]);
   const evidence = T.updatePromoResponseCapture();
   t.equal(evidence.promoMutationSeen, true); t.equal(evidence.responseTextFound, true); t.equal(evidence.responseSnippet, 'Промокод недоступен для этого заказа');
   resetResponseSurface();
+});
+
+test('live CouponV2 sibling response is captured from the wider semantic container', (t) => {
+  const surface = livePromoResponseSurface(); const responseContainer = T.findPromoResponseContainer(surface.input, surface.apply);
+  t.equal(T.findPromoInputContainer(surface.input), surface.label); t.equal(responseContainer, surface.outer);
+  const capture = T.startPromoResponseCapture(surface.input, surface.apply); t.equal(capture.responseContainerStrategy, surface.data.expected.containerStrategy);
+  t.equal(T.clickConfirmedPromoApply(surface.apply, surface.input, capture), true);
+  const response = surface.addResponse(); FakeMutationObserver.instances.at(-1).trigger([{ target: response, addedNodes: [response], type: 'childList' }]);
+  const evidence = T.updatePromoResponseCapture();
+  t.equal(evidence.responseContainerFound, true); t.equal(evidence.responseContainerStrategy, 'COUPON_SEMANTIC_ANCESTOR');
+  t.equal(evidence.promoMutationSeen, true); t.equal(evidence.responseTextFound, true); t.equal(evidence.responseSnippet, surface.data.response.text);
+  t.equal(C.textOutcome(evidence.responseSnippet), C.STATUS.EXPIRED); t.ok(Number.isFinite(evidence.classificationLatencyMs)); resetResponseSurface();
+});
+
+test('new short local response does not need the word promo', (t) => {
+  const surface = livePromoResponseSurface(); const capture = T.startPromoResponseCapture(surface.input, surface.apply); T.clickConfirmedPromoApply(surface.apply, surface.input, capture);
+  const response = surface.addResponse('Больше не действует', { role: 'alert' }); FakeMutationObserver.instances.at(-1).trigger([{ target: response, addedNodes: [response] }]);
+  const evidence = T.updatePromoResponseCapture(); t.equal(evidence.responseSnippet, 'Больше не действует'); t.equal(C.textOutcome(evidence.responseSnippet), C.STATUS.EXPIRED); resetResponseSurface();
+});
+
+test('unchanged pre-existing promo helper is excluded by before/after diff', (t) => {
+  const surface = livePromoResponseSurface(); const response = surface.addResponse('Введите промокод');
+  const capture = T.startPromoResponseCapture(surface.input, surface.apply); T.clickConfirmedPromoApply(surface.apply, surface.input, capture);
+  FakeMutationObserver.instances.at(-1).trigger([{ target: response, addedNodes: [] }]);
+  const evidence = T.updatePromoResponseCapture(); t.equal(evidence.promoMutationSeen, true); t.equal(evidence.responseTextFound, false); t.equal(evidence.responseSnippet, null); resetResponseSurface();
+});
+
+test('only a post-Apply input validation change is reported as a signal', (t) => {
+  const stale = responseSurface(); stale.input.setAttribute('aria-invalid', 'true');
+  let capture = T.startPromoResponseCapture(stale.input, stale.apply); T.clickConfirmedPromoApply(stale.apply, stale.input, capture);
+  let evidence = T.updatePromoResponseCapture(); t.equal(evidence.inputInvalid, true); t.equal(evidence.inputValidationChanged, false); resetResponseSurface();
+  const changed = responseSurface(); capture = T.startPromoResponseCapture(changed.input, changed.apply); T.clickConfirmedPromoApply(changed.apply, changed.input, capture);
+  changed.input.setAttribute('aria-invalid', 'true'); evidence = T.updatePromoResponseCapture(); t.equal(evidence.inputInvalid, true); t.equal(evidence.inputValidationChanged, true); resetResponseSurface();
+});
+
+test('response capture excludes checkout text outside confirmed CouponV2 scope', (t) => {
+  const surface = livePromoResponseSurface(); const capture = T.startPromoResponseCapture(surface.input, surface.apply); T.clickConfirmedPromoApply(surface.apply, surface.input, capture);
+  for (const text of ['Ошибка оплаты', 'Стоимость доставки обновлена', 'Получатель и адрес доставки', 'Order summary updated', 'Seller coupon is invalid', 'Promo code expired']) {
+    const outside = new FakeElement({ tag: 'div', text, attrs: { role: 'alert' } }); FakeMutationObserver.instances.at(-1).trigger([{ target: outside, addedNodes: [outside] }]);
+  }
+  const evidence = T.updatePromoResponseCapture(); t.equal(evidence.promoMutationSeen, false); t.equal(evidence.responseTextFound, false); resetResponseSurface();
 });
 
 for (const [attribute, source] of [['aria-describedby', 'ARIA_DESCRIBEDBY'], ['aria-errormessage', 'ARIA_ERRORMESSAGE']]) {

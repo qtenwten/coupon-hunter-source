@@ -143,6 +143,12 @@ test('UNKNOWN result displays a safe verification message or promo response snip
   t.equal(view.unknownCount, 1); t.equal(view.testedCount, 1);
 });
 
+test('live DELD12 EXPIRED result renders as rejected and expired', async (t) => {
+  const session = { status: 'COMPLETE', codes: ['DELD12'], results: [{ code: 'DELD12', verified: true, verificationStatus: 'EXPIRED', verificationMessage: 'Промокод больше не действует', saving: 0 }] };
+  const view = await createHarness({ session }).controller.initialize();
+  t.equal(view.recentResults[0].code, 'DELD12'); t.equal(view.recentResults[0].tone, 'rejected'); t.equal(view.recentResults[0].label, 'истёк');
+});
+
 test('inconclusive streak renders stopped counters and copyable safe results', async (t) => {
   const session = {
     status: 'INCONCLUSIVE_RESPONSE_STREAK', stopReason: 'Остановлено: 3 неопределённых ответа подряд', codes: ['A1', 'A2', 'A3', 'A4'],

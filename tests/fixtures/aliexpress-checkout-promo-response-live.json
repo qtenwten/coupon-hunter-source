@@ -1,0 +1,21 @@
+{
+  "input": {
+    "ariaLabel": "Promo code",
+    "value": "DELD12"
+  },
+  "apply": {
+    "type": "button",
+    "testId": "buttonApply"
+  },
+  "outer": {
+    "className": "RedCheckoutSummaryRedesign_CouponV2__root"
+  },
+  "response": {
+    "className": "RedCheckoutSummaryRedesign_CouponV2__error",
+    "text": "Промокод больше не действует. Попробуйте ввести другой"
+  },
+  "expected": {
+    "containerStrategy": "COUPON_SEMANTIC_ANCESTOR",
+    "verificationStatus": "EXPIRED"
+  }
+}

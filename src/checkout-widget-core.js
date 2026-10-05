@@ -70,8 +70,11 @@
   function safeResponseEvidence(value = {}) {
     return {
       applyClicked: value.applyClicked === true,
+      responseContainerFound: value.responseContainerFound === true,
+      responseContainerStrategy: safeResultText(value.responseContainerStrategy)?.slice(0, 60) || null,
       promoMutationSeen: value.promoMutationSeen === true,
       inputInvalid: typeof value.inputInvalid === 'boolean' ? value.inputInvalid : null,
+      inputValidationChanged: value.inputValidationChanged === true,
       applyButtonFound: value.applyButtonFound === true,
       appliedIndicatorFound: value.appliedIndicatorFound === true,
       totalBefore: finite(value.totalBefore), totalAfter: finite(value.totalAfter),
@@ -79,6 +82,7 @@
       responseTextFound: value.responseTextFound === true && !!safeResultText(value.responseSnippet),
       responseSource: safeResultText(value.responseSource)?.slice(0, 60) || null,
       responseSnippet: safeResultText(value.responseSnippet),
+      classificationLatencyMs: Number.isFinite(Number(value.classificationLatencyMs)) ? Math.max(0, Math.round(Number(value.classificationLatencyMs))) : null,
       elapsedMs: Number.isFinite(Number(value.elapsedMs)) ? Math.max(0, Math.round(Number(value.elapsedMs))) : 0
     };
   }

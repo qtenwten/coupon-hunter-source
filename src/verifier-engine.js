@@ -13,12 +13,15 @@
 
   function createVerifier(adapter, options = {}) {
     const maxCodes = Math.min(options.maxCodes || 25, Limits.HARD_LIVE_ATTEMPT_LIMIT);
-    const verificationTimeoutMs = options.verificationTimeoutMs || 10_000;
-    const restorationTimeoutMs = options.restorationTimeoutMs || 9_000;
-    const pollMs = options.pollMs || 350;
-    const quietWindowMs = options.quietWindowMs || 1_000;
-    const responseQuietWindowMs = options.responseQuietWindowMs || 350;
-    const attemptDelayMs = options.attemptDelayMs ?? 900;
+    const verificationTimeoutMs = options.verificationTimeoutMs ?? 8_000;
+    const noSignalTimeoutMs = Math.min(options.noSignalTimeoutMs ?? 3_250, verificationTimeoutMs);
+    const restorationTimeoutMs = options.restorationTimeoutMs ?? 9_000;
+    const pollMs = options.pollMs ?? 175;
+    const quietWindowMs = options.quietWindowMs ?? 1_000;
+    const responseQuietWindowMs = options.responseQuietWindowMs ?? 175;
+    const rejectedBaselineQuietMs = options.rejectedBaselineQuietMs ?? 300;
+    const rejectedClearTimeoutMs = options.rejectedClearTimeoutMs ?? 650;
+    const attemptDelayMs = options.attemptDelayMs ?? 275;
     const unknownStreakLimit = options.unknownStreakLimit || 3;
     const now = () => adapter.now?.() ?? Date.now();
     const iso = () => new Date(now()).toISOString();
@@ -61,7 +64,7 @@
       return last || await adapter.readCheckout();
     }
 
-    async function waitForBaseline(baselineCheckout, timeoutMs = restorationTimeoutMs) {
+    async function waitForBaseline(baselineCheckout, timeoutMs = restorationTimeoutMs, requiredQuietMs = quietWindowMs) {
       const started = now(); let lastSignature = null; let baselineSince = null; let checkout = null;
       while (now() - started < timeoutMs) {
         checkout = await adapter.readCheckout();
@@ -70,9 +73,10 @@
         if (signature !== lastSignature) { lastSignature = signature; baselineSince = null; }
         if (C.financialBaselineMatches(financialOf(baselineCheckout), financialOf(checkout))) {
           if (baselineSince === null) baselineSince = now();
-          if (now() - baselineSince >= quietWindowMs) return { restored: true, status: null, reason: null, checkout };
+          if (now() - baselineSince >= requiredQuietMs) return { restored: true, status: null, reason: null, checkout };
         } else baselineSince = null;
-        await adapter.waitForSignal(Math.max(1, Math.min(pollMs, timeoutMs - (now() - started))));
+        const quietRemaining = baselineSince === null ? pollMs : requiredQuietMs - (now() - baselineSince);
+        await adapter.waitForSignal(Math.max(1, Math.min(pollMs, timeoutMs - (now() - started), quietRemaining)));
       }
       return { restored: false, status: SESSION_STATUS.BASELINE_LOST, reason: 'Итоговая сумма не вернулась к baseline', checkout };
     }
@@ -88,8 +92,11 @@
       const snippet = typeof raw.responseSnippet === 'string' ? raw.responseSnippet.replace(/[\s\u00A0\u202F]+/g, ' ').trim().slice(0, 200) : null;
       return {
         applyClicked: raw.applyClicked === true || applyResult.ok === true,
+        responseContainerFound: raw.responseContainerFound === true,
+        responseContainerStrategy: typeof raw.responseContainerStrategy === 'string' ? raw.responseContainerStrategy.slice(0, 60) : null,
         promoMutationSeen: raw.promoMutationSeen === true,
         inputInvalid: typeof raw.inputInvalid === 'boolean' ? raw.inputInvalid : null,
+        inputValidationChanged: raw.inputValidationChanged === true,
         applyButtonFound: raw.applyButtonFound === true || applyResult.ok === true,
         appliedIndicatorFound: !!(appliedEvidence?.applied || observation.appliedEvidence?.applied || raw.appliedIndicatorFound),
         totalBefore: Number.isFinite(before.total) ? before.total : null,
@@ -98,6 +105,7 @@
         responseTextFound: !!snippet,
         responseSource: snippet && typeof raw.responseSource === 'string' ? raw.responseSource.slice(0, 60) : null,
         responseSnippet: snippet,
+        classificationLatencyMs: Number.isFinite(raw.classificationLatencyMs) ? Math.max(0, Math.round(raw.classificationLatencyMs)) : null,
         elapsedMs: Number.isFinite(raw.elapsedMs) ? Math.max(0, Math.round(raw.elapsedMs)) : Number.isFinite(startedAt) ? Math.max(0, Math.round(now() - startedAt)) : 0
       };
     }
@@ -108,14 +116,17 @@
     }
 
     async function waitForTerminal(code, baselineCheckout, beforeObservation = {}) {
-      const started = now(); let lastObservation = null; let appliedEvidence = { applied: false, confidence: 0, evidenceType: null, snippet: null }; let pendingRejection = null;
+      const started = now(); let lastObservation = null; let appliedEvidence = { applied: false, confidence: 0, evidenceType: null, snippet: null }; let pendingRejection = null; let meaningfulSignalSeen = false;
       const beforeEvidenceSignature = evidenceSignature(beforeObservation.appliedEvidence);
-      while (now() - started < verificationTimeoutMs) {
+      while (now() - started < (meaningfulSignalSeen ? verificationTimeoutMs : noSignalTimeoutMs)) {
         const observation = await adapter.observe(code); lastObservation = observation;
         if (!cartMatches(baselineCheckout, observation.checkout)) return { type: 'CART_CHANGED', observation };
         if ([C.STATUS.CAPTCHA, C.STATUS.RATE_LIMITED].includes(observation.safetyStatus)) return { type: 'SAFETY_STOP', status: observation.safetyStatus, observation };
         const feedback = observation.feedbackText === beforeObservation.feedbackText ? '' : observation.feedbackText || '';
         if (observation.appliedEvidence?.applied && evidenceSignature(observation.appliedEvidence) !== beforeEvidenceSignature) appliedEvidence = observation.appliedEvidence;
+        const responseEvidence = observation.responseEvidence || {};
+        const financialChanged = C.financialSignature(financialOf(baselineCheckout)) !== C.financialSignature(financialOf(observation.checkout));
+        if (appliedEvidence.applied || financialChanged || responseEvidence.promoMutationSeen === true || responseEvidence.responseTextFound === true || responseEvidence.inputValidationChanged === true) meaningfulSignalSeen = true;
         const saving = C.computeSaving(financialOf(baselineCheckout), financialOf(observation.checkout));
         if (appliedEvidence.applied && Number.isFinite(saving) && saving > 0) {
           const stableCheckout = await waitForStableCheckout(5000);
@@ -128,9 +139,11 @@
         if (textual && ![C.STATUS.CAPTCHA, C.STATUS.RATE_LIMITED].includes(textual)) {
           const signature = `${textual}|${responseText}`;
           if (!pendingRejection || pendingRejection.signature !== signature) pendingRejection = { signature, since: now() };
-          if (now() - pendingRejection.since >= responseQuietWindowMs) return { type: 'REJECTED', status: textual, observation: { ...observation, feedbackText: responseText } };
+          if (now() - pendingRejection.since >= responseQuietWindowMs) return { type: 'REJECTED', status: textual, observation: { ...observation, feedbackText: responseText }, classificationLatencyMs: now() - started };
         } else pendingRejection = null;
-        await adapter.waitForSignal(pollMs);
+        const deadline = started + (meaningfulSignalSeen ? verificationTimeoutMs : noSignalTimeoutMs);
+        const rejectionRemaining = pendingRejection ? responseQuietWindowMs - (now() - pendingRejection.since) : pollMs;
+        await adapter.waitForSignal(Math.max(1, Math.min(pollMs, deadline - now(), rejectionRemaining)));
       }
       const observation = lastObservation || await adapter.observe(code);
       return { type: 'TIMEOUT', observation: { ...observation, appliedEvidence }, appliedEvidence };
@@ -160,6 +173,7 @@
       const terminal = await waitForTerminal(result.code, baselineCheckout, before);
       const observation = terminal.observation || {}; const finalCapture = await adapter.finishResponseCapture?.() || {};
       observation.responseEvidence = { ...(observation.responseEvidence || {}), ...finalCapture };
+      if (Number.isFinite(terminal.classificationLatencyMs)) observation.responseEvidence.classificationLatencyMs = terminal.classificationLatencyMs;
       let status = C.STATUS.UNKNOWN_ERROR; let verified = false; let reason = 'NO_CONCLUSIVE_SIGNAL';
       if (terminal.type === 'VALID') { status = C.STATUS.VALID_APPLIED; verified = true; reason = 'APPLIED_AND_TOTAL_DECREASED'; }
       else if (terminal.type === 'REJECTED') { status = terminal.status || C.STATUS.UNKNOWN_ERROR; verified = status !== C.STATUS.UNKNOWN_ERROR; reason = 'SITE_RESPONSE'; }
@@ -233,7 +247,16 @@
           if (!restoration.restored) { session.status = restoration.status; session.stopReason = restoration.reason; await persist(session); break; }
         } else {
           await adapter.clearCode();
-          const cleared = await waitForBaseline(baselineCheckout, Math.min(6_000, restorationTimeoutMs));
+          const conclusiveUnchangedRejection = result.verified === true && result.verificationStatus !== C.STATUS.UNKNOWN_ERROR &&
+            result.verificationStatus !== C.STATUS.VALID_APPLIED && result.responseEvidence?.totalChanged === false && result.responseEvidence?.appliedIndicatorFound !== true;
+          let responseCleared = false;
+          if (conclusiveUnchangedRejection && adapter.waitForRejectedClear) responseCleared = await adapter.waitForRejectedClear(result.responseEvidence?.responseSnippet || null, rejectedClearTimeoutMs);
+          const useFastBaseline = conclusiveUnchangedRejection && (responseCleared || !adapter.waitForRejectedClear);
+          const cleared = await waitForBaseline(
+            baselineCheckout,
+            useFastBaseline ? Math.min(1_200, restorationTimeoutMs) : Math.min(6_000, restorationTimeoutMs),
+            useFastBaseline ? rejectedBaselineQuietMs : quietWindowMs
+          );
           if (!cleared.restored) { session.status = cleared.status; session.stopReason = cleared.status === SESSION_STATUS.CART_CHANGED ? 'Структура корзины изменилась после проверки' : 'Итоговая сумма изменилась после отклонённого кода'; break; }
         }
         session.consecutiveUnknowns = result.verificationStatus === C.STATUS.UNKNOWN_ERROR ? session.consecutiveUnknowns + 1 : 0;

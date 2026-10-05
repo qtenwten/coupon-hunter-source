@@ -10,7 +10,7 @@ class FakeCheckoutEnvironment {
     this.time = 1_700_000_000_000; this.behaviors = behaviors; this.options = options;
     this.baselineFinancial = { subtotal: 9990, shipping: 0, tax: 0, discount: 0, total: 9990, currency: 'RUB', ...(options.financial || {}) };
     this.financial = { ...this.baselineFinancial }; this.feedback = ''; this.safety = null;
-    this.applied = false; this.currentCode = null; this.events = []; this.actions = []; this.sessions = []; this.responseEvidence = null;
+    this.applied = false; this.currentCode = null; this.events = []; this.actions = []; this.actionTimes = []; this.sessions = []; this.responseEvidence = null;
     this.items = options.items || [{ itemId: 'ITEM-A', skuId: 'SKU-A', quantity: 1, sellerId: 'STORE-A' }];
     this.shippingMethodId = options.shippingMethodId || 'STANDARD';
     this.origin = options.origin || 'https://aliexpress.ru'; this.pageClass = options.pageClass || 'CHECKOUT'; this.pathClass = options.pathClass || '/p/trade/confirm.html';
@@ -47,9 +47,9 @@ class FakeCheckoutEnvironment {
       ensureReady: async () => ({ ok: true }), existingCode: async () => null,
       readCheckout: async () => { this.applyDue(); return this.checkout(); },
       readStableCheckout: async () => { this.applyDue(); return this.checkout(); },
-      enterCode: async (code) => { this.currentCode = code; this.feedback = ''; this.responseEvidence = null; this.applied = !!this.behaviors[code]?.staleApplied; this.actions.push(`enter:${code}`); return { ok: true }; },
+      enterCode: async (code) => { this.currentCode = code; this.feedback = ''; this.responseEvidence = null; this.applied = !!this.behaviors[code]?.staleApplied; this.actions.push(`enter:${code}`); this.actionTimes.push({ action: `enter:${code}`, at: this.time }); return { ok: true }; },
       clickApply: async (code) => {
-        this.actions.push(`apply:${code}`); this.applyStartedAt = this.time; const behavior = this.behaviors[code] || {};
+        this.actions.push(`apply:${code}`); this.actionTimes.push({ action: `apply:${code}`, at: this.time }); this.applyStartedAt = this.time; const behavior = this.behaviors[code] || {};
         for (const event of behavior.events || []) this.events.push({ ...event, at: this.time + (event.delay || 0) });
         return behavior.applyFailure ? { ok: false, message: 'Apply missing', responseEvidence: { applyClicked: false, applyButtonFound: false } } : { ok: true, responseEvidence: { applyClicked: true, applyButtonFound: true } };
       },
@@ -75,9 +75,14 @@ class FakeCheckoutEnvironment {
         return { ok: true };
       },
       clearCode: async () => {
-        this.actions.push(`clear:${this.currentCode}`); this.feedback = ''; this.applied = false;
+        this.actions.push(`clear:${this.currentCode}`); this.actionTimes.push({ action: `clear:${this.currentCode}`, at: this.time }); this.feedback = ''; this.responseEvidence = null; this.applied = false;
         const behavior = this.behaviors[this.currentCode] || {};
         for (const event of behavior.clearEvents || []) this.events.push({ ...event, at: this.time + (event.delay || 0) });
+      },
+      waitForRejectedClear: async (_snippet, timeoutMs) => {
+        const behavior = this.behaviors[this.currentCode] || {}; this.actions.push(`clear-response:${this.currentCode}`);
+        if (behavior.responseClearFailure) { this.time += timeoutMs; return false; }
+        this.time += behavior.responseClearDelay || 0; return true;
       },
       safetyStatus: async () => this.safety, isCancelled: () => false,
       delay: async (ms) => { this.time += ms; this.applyDue(); },
@@ -100,7 +105,7 @@ test('PromoTester CASE A: valid code is measured, removed and baseline restored 
   t.equal(session.origin, 'https://aliexpress.ru'); t.equal(session.pageClass, 'CHECKOUT'); t.equal(session.pathClass, '/p/trade/confirm.html');
   t.equal(session.currency, 'RUB'); t.equal(session.baseline.total, 9990); t.ok(!!session.checkoutFingerprint.signature); t.ok(!!session.createdAt);
   t.equal(session.results[0].saving, 1200); t.equal(session.results[0].baselineRestored, true);
-  t.deep(Object.keys(session.results[0].responseEvidence), ['applyClicked', 'promoMutationSeen', 'inputInvalid', 'applyButtonFound', 'appliedIndicatorFound', 'totalBefore', 'totalAfter', 'totalChanged', 'responseTextFound', 'responseSource', 'responseSnippet', 'elapsedMs']);
+  t.deep(Object.keys(session.results[0].responseEvidence), ['applyClicked', 'responseContainerFound', 'responseContainerStrategy', 'promoMutationSeen', 'inputInvalid', 'inputValidationChanged', 'applyButtonFound', 'appliedIndicatorFound', 'totalBefore', 'totalAfter', 'totalChanged', 'responseTextFound', 'responseSource', 'responseSnippet', 'classificationLatencyMs', 'elapsedMs']);
   t.equal(session.results[0].responseEvidence.applyClicked, true); t.equal(session.results[0].responseEvidence.appliedIndicatorFound, true);
   t.equal(session.results[0].responseEvidence.totalBefore, 9990); t.equal(session.results[0].responseEvidence.totalAfter, 8790); t.equal(session.results[0].responseEvidence.totalChanged, true);
   t.deep(session.results[0].transitions.map((row) => row.state), ['IDLE','ENTERING','APPLYING','WAITING_RESPONSE','APPLIED','REMOVING','RESTORING_BASELINE']);
@@ -161,6 +166,42 @@ test('no response and unchanged total stays UNKNOWN with explicit evidence diagn
   const session = await verifierFor(env, { verificationTimeoutMs: 750, quietWindowMs: 100 }).run(['SILENT']); const result = session.results[0];
   t.equal(result.verificationStatus, C.STATUS.UNKNOWN_ERROR); t.equal(result.verified, false); t.match(result.verificationMessage, /не показал распознаваемый ответ/);
   t.equal(result.responseEvidence.applyClicked, true); t.equal(result.responseEvidence.responseTextFound, false); t.equal(result.responseEvidence.totalChanged, false);
+});
+
+test('silent response uses adaptive no-signal timeout instead of full success window', async (t) => {
+  const env = new FakeCheckoutEnvironment({ SILENT: {} });
+  const session = await verifierFor(env, { verificationTimeoutMs: 8000, noSignalTimeoutMs: 3250, quietWindowMs: 100 }).run(['SILENT']);
+  const result = session.results[0]; t.equal(result.verificationStatus, C.STATUS.UNKNOWN_ERROR);
+  t.ok(result.responseEvidence.elapsedMs >= 3250); t.ok(result.responseEvidence.elapsedMs < 3500); t.equal(result.responseEvidence.classificationLatencyMs, null);
+});
+
+test('immediate live EXPIRED response finishes through fast rejection path', async (t) => {
+  const phrase = 'Промокод больше не действует. Попробуйте ввести другой';
+  const env = new FakeCheckoutEnvironment({ DELD12: { events: [{ delay: 0, feedback: phrase }] } });
+  const session = await verifierFor(env, { verificationTimeoutMs: 8000 }).run(['DELD12']); const result = session.results[0];
+  t.equal(result.verificationStatus, C.STATUS.EXPIRED); t.equal(result.verified, true); t.equal(result.saving, 0);
+  t.equal(result.responseEvidence.responseSnippet, phrase); t.ok(result.responseEvidence.classificationLatencyMs <= 250); t.equal(session.consecutiveUnknowns, 0);
+});
+
+test('immediate INVALID response does not wait for full verification timeout', async (t) => {
+  const env = new FakeCheckoutEnvironment({ BAD: { events: [{ delay: 0, feedback: 'This promo code is invalid' }] } });
+  const session = await verifierFor(env, { verificationTimeoutMs: 8000 }).run(['BAD']); const result = session.results[0];
+  t.equal(result.verificationStatus, C.STATUS.INVALID); t.equal(result.verified, true); t.ok(result.responseEvidence.classificationLatencyMs <= 250);
+});
+
+test('meaningful Applied signal extends observation beyond no-signal deadline', async (t) => {
+  const env = new FakeCheckoutEnvironment({ CODE1: { events: [{ delay: 3000, applied: true, name: 'late-applied' }, { delay: 4500, total: 8790, name: 'late-total' }] } });
+  const session = await verifierFor(env, { verificationTimeoutMs: 8000, noSignalTimeoutMs: 3250 }).run(['CODE1']);
+  t.equal(session.results[0].verificationStatus, C.STATUS.VALID_APPLIED); t.equal(session.results[0].saving, 1200);
+  t.ok(env.actions.includes('event:late-total')); t.ok(env.time >= 1_700_000_004_500);
+});
+
+test('unchanged-total rejected code uses short baseline quiet path', async (t) => {
+  const env = new FakeCheckoutEnvironment({ BAD: { events: [{ delay: 0, feedback: 'This promo code is invalid' }] }, NEXT: { events: [{ delay: 0, feedback: 'Promo code expired' }] } });
+  const session = await verifierFor(env, { verificationTimeoutMs: 8000, rejectedBaselineQuietMs: 300 }).run(['BAD', 'NEXT']);
+  const clearedAt = env.actionTimes.find((row) => row.action === 'clear:BAD').at; const nextAt = env.actionTimes.find((row) => row.action === 'enter:NEXT').at;
+  t.equal(session.results[0].verificationStatus, C.STATUS.INVALID); t.ok(env.actions.includes('clear-response:BAD'));
+  t.ok(nextAt - clearedAt < 1600, `expected fast rejection reset, got ${nextAt - clearedAt}ms`); t.ok(!env.actions.includes('remove:BAD'));
 });
 
 test('total decrease without applied evidence remains UNKNOWN', async (t) => {
