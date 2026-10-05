@@ -11,6 +11,12 @@
   const SAFETY_SESSION = new Set(['SAFETY_STOP', 'BASELINE_LOST', 'CART_CHANGED', 'CHECKOUT_IDENTITY_UNCERTAIN', 'REMOVE_FAILED']);
   const STOPPED_SESSION = new Set(['CANCELLED', 'STOPPED', 'INCONCLUSIVE_RESPONSE_STREAK']);
   const SUCCESS_STATUS = 'VALID_APPLIED';
+  const Country = globalThis.CouponHunterCountryProfile || {
+    MODES: { AUTO: 'AUTO', MANUAL: 'MANUAL' },
+    sanitizeSettings: (value = {}) => ({ promoCountryMode: value.promoCountryMode === 'MANUAL' ? 'MANUAL' : 'AUTO', promoCountry: value.promoCountry || null, includeUnknownCountryCodes: value.includeUnknownCountryCodes !== false }),
+    resolveTarget: (settings, signal) => settings.promoCountryMode === 'MANUAL' && settings.promoCountry ? { code: settings.promoCountry, mode: 'MANUAL', source: 'USER_MANUAL' } : signal?.code ? { code: signal.code, mode: 'AUTO', source: 'AUTO' } : settings.promoCountry ? { code: settings.promoCountry, mode: 'AUTO', source: 'USER_FALLBACK' } : { code: null, mode: 'AUTO', source: 'UNRESOLVED' },
+    displayName: (code) => code || 'Не определена', normalizeCountry: (code) => /^[A-Za-z]{2}$/.test(code || '') ? String(code).toUpperCase() : null
+  };
 
   const finite = (value) => Number.isFinite(value) ? value : null;
   const modeName = (value) => value === 'DEEP' ? 'DEEP' : 'STANDARD';
@@ -117,18 +123,25 @@
 
   function createController(dependencies = {}) {
     const limits = dependencies.limits || {};
-    const model = { mode: 'STANDARD', context: null, library: [], plan: null, session: null, error: null, feedStatus: null, startedHere: false };
+    const model = { mode: 'STANDARD', context: null, library: [], plan: null, session: null, error: null, feedStatus: null, startedHere: false, countrySettings: Country.sanitizeSettings(), countryTarget: { code: null, mode: 'AUTO', source: 'UNRESOLVED' } };
     const notify = () => dependencies.onChange?.(view());
 
     function sessionForCurrentContext() {
       if (!model.session) return null;
       if (model.startedHere || typeof dependencies.sessionMatchesContext !== 'function') return model.session;
-      return dependencies.sessionMatchesContext(model.session, model.context) ? model.session : null;
+      if (!dependencies.sessionMatchesContext(model.session, model.context)) return null;
+      const sessionCountry = Country.normalizeCountry(model.session?.promoIntelligence?.countryCode);
+      if (sessionCountry && sessionCountry !== model.countryTarget.code) return null;
+      return model.session;
     }
 
     function rebuildPlan() {
       if (!model.context?.available || typeof dependencies.buildQueue !== 'function') { model.plan = null; return; }
-      model.plan = dependencies.buildQueue(model.library, model.context.intelligence || model.context, { mode: model.mode });
+      model.countryTarget = Country.resolveTarget(model.countrySettings, model.context.countrySignal || { code: model.context.countryCode, source: model.context.countrySource, strong: !!model.context.countryCode });
+      const base = model.context.intelligence || model.context;
+      const intelligenceContext = { ...base, country: model.countryTarget.code, region: model.countryTarget.code, regionConfidence: model.countryTarget.code ? 1 : 0, includeUnknownCountryCodes: model.countrySettings.includeUnknownCountryCodes };
+      model.plan = dependencies.buildQueue(model.library, intelligenceContext, { mode: model.mode, includeUnknownCountryCodes: model.countrySettings.includeUnknownCountryCodes });
+      if (model.plan?.diagnostics) Object.assign(model.plan.diagnostics, { countryCode: model.countryTarget.code, countryMode: model.countrySettings.promoCountryMode, countrySource: model.countryTarget.source, includeUnknownCountryCodes: model.countrySettings.includeUnknownCountryCodes });
     }
 
     function widgetVisible() {
@@ -146,27 +159,33 @@
       const tested = results.filter((row) => !row?.skipped); const workingCount = tested.filter((row) => row.verified && row.verificationStatus === SUCCESS_STATUS && Number(row.saving) > 0 && row.baselineRestored === true).length;
       const unknownCount = tested.filter((row) => row.verificationStatus === 'UNKNOWN_ERROR').length;
       const rejectedCount = tested.filter((row) => row.verified === true && row.verificationStatus !== SUCCESS_STATUS).length;
-      const recent = results.slice(-4); if (best && !recent.includes(best)) recent.unshift(best);
+      const history = tested.slice().reverse().map((row) => ({ code: row.code, tone: resultTone(row), label: resultLabel(row), saving: finite(Number(row.saving)), verificationStatus: row.verificationStatus, best: row === best || (!!best && row.code === best.code) }));
       const canCopyResults = !!session && !ACTIVE_SESSION.has(session.status) && tested.length > 0;
+      const active = ACTIVE_SESSION.has(session?.status); const countryCounts = model.plan?.diagnostics?.countryMatchCounts || { match: 0, global: 0, unknown: 0, mismatch: 0 };
       return {
         state, mode: model.mode, visible: widgetVisible(), available: !!model.context?.available,
         foundCount: model.library.length, applicableCount: model.plan ? model.plan.diagnostics?.eligible ?? 0 : null,
         queueCount: total, progress, testedCount: tested.length, workingCount, rejectedCount, unknownCount, currentCode: session?.current || null,
         bestCode: best?.code || null, bestSaving: finite(Number(best?.saving)), currency: best?.priceAfter?.currency || best?.priceBefore?.currency || session?.currency || model.context?.currency || null,
-        recentResults: recent.slice(-5).map((row) => ({ code: row.code, tone: resultTone(row), label: resultLabel(row), saving: finite(Number(row.saving)), verificationStatus: row.verificationStatus })),
+        recentResults: history, resultHistory: history,
+        countryCode: model.countryTarget.code, countryMode: model.countrySettings.promoCountryMode, countrySource: model.countryTarget.source,
+        countryName: Country.displayName(model.countryTarget.code, 'ru'), includeUnknownCountryCodes: model.countrySettings.includeUnknownCountryCodes,
+        countryMatchCounts: countryCounts, countrySelectionDisabled: active,
         sessionStatus: session?.status || null, completed: session?.status === 'COMPLETE', bestApplied: session?.bestApplied === true,
         message: state === STATES.SAFETY_STOP ? safetyMessage(session) : session?.stopReason || model.error || model.context?.reason || null,
         canStart: !!model.context?.available && !ACTIVE_SESSION.has(session?.status) && !!model.plan?.queue?.length,
         canStop: ACTIVE_SESSION.has(session?.status), canApplyBest: session?.status === 'COMPLETE' && !!best?.code && session?.bestApplied !== true,
         canCopyResults, resultsExport: canCopyResults ? safeResultsExport(session) : null,
-        feedStatus: model.feedStatus, diagnostics: model.context?.diagnostics || null
+        feedStatus: model.feedStatus, diagnostics: model.context?.diagnostics ? { ...model.context.diagnostics, countryCode: model.countryTarget.code, countryMode: model.countrySettings.promoCountryMode, countrySource: model.countryTarget.source, countryMatchCounts: countryCounts } : null
       };
     }
 
     async function refresh({ refreshFeed = false } = {}) {
       model.error = null;
       try {
+        model.countrySettings = Country.sanitizeSettings(await dependencies.loadCountrySettings?.() || model.countrySettings);
         model.context = await dependencies.getContext();
+        model.countryTarget = Country.resolveTarget(model.countrySettings, model.context?.countrySignal || { code: model.context?.countryCode, source: model.context?.countrySource, strong: !!model.context?.countryCode });
         model.session = await dependencies.loadSession?.() || null;
         const visible = widgetVisible();
         if (!visible) { model.library = []; model.plan = null; notify(); return view(); }
@@ -184,6 +203,20 @@
     function setMode(mode) {
       const session = sessionForCurrentContext(); if (ACTIVE_SESSION.has(session?.status)) return view();
       model.mode = modeName(mode); rebuildPlan(); notify(); return view();
+    }
+
+    async function setCountry(value) {
+      const session = sessionForCurrentContext(); if (ACTIVE_SESSION.has(session?.status)) return view();
+      const code = Country.normalizeCountry(value);
+      model.countrySettings = Country.sanitizeSettings({ ...model.countrySettings, promoCountryMode: value === 'AUTO' ? Country.MODES.AUTO : code ? Country.MODES.MANUAL : model.countrySettings.promoCountryMode, promoCountry: value === 'AUTO' ? model.countrySettings.promoCountry : code || model.countrySettings.promoCountry });
+      await dependencies.saveCountrySettings?.(model.countrySettings); model.countryTarget = Country.resolveTarget(model.countrySettings, model.context?.countrySignal || { code: model.context?.countryCode, source: model.context?.countrySource, strong: !!model.context?.countryCode });
+      rebuildPlan(); notify(); return view();
+    }
+
+    async function setIncludeUnknownCountryCodes(value) {
+      const session = sessionForCurrentContext(); if (ACTIVE_SESSION.has(session?.status)) return view();
+      model.countrySettings = Country.sanitizeSettings({ ...model.countrySettings, includeUnknownCountryCodes: value !== false });
+      await dependencies.saveCountrySettings?.(model.countrySettings); rebuildPlan(); notify(); return view();
     }
 
     async function start() {
@@ -216,7 +249,7 @@
       notify(); return view();
     }
 
-    return { initialize, refresh, setMode, start, stop, applyBest, restoreSession, view };
+    return { initialize, refresh, setMode, setCountry, setIncludeUnknownCountryCodes, start, stop, applyBest, restoreSession, view };
   }
 
   globalThis.CouponHunterCheckoutWidgetCore = { STATES, modeLimit, bestResult, stateFor, resultTone, resultLabel, safeResponseEvidence, safeResultsExport, safetyMessage, createController };

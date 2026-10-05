@@ -2,7 +2,7 @@ const { test } = require('./harness');
 const fs = require('node:fs');
 const { ROOT, sandbox, load } = require('./helpers');
 
-const box = load(sandbox(), 'src/checkout-widget-core.js');
+const box = load(sandbox(), 'src/country-profile.js', 'src/checkout-widget-core.js');
 const Core = box.CouponHunterCheckoutWidgetCore;
 const LIMITS = { DEFAULT_LIVE_ATTEMPTS: 30, DEEP_SCAN_LIVE_ATTEMPTS: 50, HARD_LIVE_ATTEMPT_LIMIT: 50 };
 
@@ -32,20 +32,23 @@ function completeSession(bestCode = null) {
 }
 
 function createHarness(options = {}) {
-  const commands = []; let refreshCalls = 0; let contextRead = 0;
+  const commands = []; const savedCountrySettings = []; let refreshCalls = 0; let contextRead = 0;
+  let countrySettings = { promoCountryMode: 'AUTO', promoCountry: null, includeUnknownCountryCodes: true, ...(options.countrySettings || {}) };
   const library = options.library || Array.from({ length: 60 }, (_, index) => ({ code: `CODE${String(index).padStart(2, '0')}`, rankScore: 1000 - index }));
   const context = options.context || { checkoutSurfaceDetected: true, available: true, currency: 'RUB', checkoutFingerprint: { signature: 'cart-1' }, binding: { origin: 'https://aliexpress.ru', pageClass: 'CHECKOUT', pathClass: '/checkout' } };
   const controller = Core.createController({
     limits: LIMITS,
     getContext: async () => options.contexts ? options.contexts[Math.min(contextRead++, options.contexts.length - 1)] : context,
     loadSession: async () => options.session || null,
+    loadCountrySettings: async () => ({ ...countrySettings }),
+    saveCountrySettings: async (settings) => { countrySettings = { ...settings }; savedCountrySettings.push({ ...settings }); },
     refreshFeed: async () => { refreshCalls += 1; return { ok: true, count: library.length }; },
     loadLibrary: async () => library,
-    buildQueue: (rows, _checkout, config) => {
+    buildQueue: options.buildQueue || ((rows, _checkout, config) => {
       const limit = Core.modeLimit(config.mode, LIMITS);
       const eligible = rows.slice().sort((a, b) => b.rankScore - a.rankScore);
-      return { queue: eligible.slice(0, limit), diagnostics: { eligible: eligible.length, limit, queueCoversAllEligible: eligible.length <= limit } };
-    },
+      return { queue: eligible.slice(0, limit), diagnostics: { eligible: eligible.length, limit, queueCoversAllEligible: eligible.length <= limit, countryMatchCounts: { match: 0, global: 0, unknown: eligible.length, mismatch: 0 } } };
+    }),
     sendCommand: async (message) => {
       commands.push(JSON.parse(JSON.stringify(message)));
       if (message.type === 'CH_TEST_PROMOS') return options.runResult || completeSession('CODE00');
@@ -54,7 +57,7 @@ function createHarness(options = {}) {
     },
     sessionMatchesContext: options.sessionMatchesContext || (() => true)
   });
-  return { controller, commands, get refreshCalls() { return refreshCalls; } };
+  return { controller, commands, savedCountrySettings, get refreshCalls() { return refreshCalls; }, get countrySettings() { return countrySettings; } };
 }
 
 test('checkout widget initializes READY without starting PromoTester', async (t) => {
@@ -181,6 +184,58 @@ test('persisted completed session restores progress, recent results and BEST', a
   const session = completeSession('BEST20'); session.codes = ['BEST20', 'NOPE1']; session.results.push({ code: 'NOPE1', verified: true, verificationStatus: 'INVALID', saving: 0 });
   const harness = createHarness({ session }); const view = await harness.controller.initialize();
   t.equal(view.state, 'FOUND_BEST'); t.equal(view.progress, 2); t.equal(view.bestCode, 'BEST20'); t.equal(view.bestSaving, 1200); t.equal(view.recentResults.length, 2);
+});
+
+test('session with 30 tested results exposes all rows newest-first without BEST duplication', async (t) => {
+  const results = Array.from({ length: 30 }, (_, index) => ({ code: `R${String(index).padStart(2, '0')}`, verified: true, verificationStatus: index === 7 ? 'VALID_APPLIED' : 'INVALID', saving: index === 7 ? 500 : 0, baselineRestored: index === 7 }));
+  const session = { status: 'COMPLETE', codes: results.map((row) => row.code), results, bestCode: 'R07', currency: 'RUB' };
+  const view = await createHarness({ session }).controller.initialize();
+  t.equal(view.resultHistory.length, 30); t.equal(view.recentResults.length, 30); t.equal(view.resultHistory[0].code, 'R29'); t.equal(view.resultHistory.at(-1).code, 'R00');
+  t.equal(view.resultHistory.filter((row) => row.code === 'R07').length, 1); t.equal(view.resultHistory.find((row) => row.code === 'R07').best, true);
+  t.equal(view.resultsExport.results.length, view.testedCount);
+});
+
+test('session with 50 tested results survives restoreSession without truncation', async (t) => {
+  const results = Array.from({ length: 50 }, (_, index) => ({ code: `D${String(index).padStart(2, '0')}`, verified: true, verificationStatus: 'EXPIRED', saving: 0 }));
+  const harness = createHarness(); await harness.controller.initialize();
+  const view = harness.controller.restoreSession({ status: 'COMPLETE', codes: results.map((row) => row.code), results, bestCode: null });
+  t.equal(view.resultHistory.length, 50); t.equal(view.resultHistory[0].code, 'D49'); t.equal(view.resultHistory[49].code, 'D00');
+  t.equal(view.resultsExport.results.length, 50);
+});
+
+test('history UI is scroll-bounded and production code contains no four/five-result truncation', (t) => {
+  const core = fs.readFileSync(`${ROOT}/src/checkout-widget-core.js`, 'utf8'); const css = fs.readFileSync(`${ROOT}/src/content.css`, 'utf8'); const ui = fs.readFileSync(`${ROOT}/src/checkout-widget.js`, 'utf8');
+  t.ok(!core.includes('results.slice(-4)')); t.ok(!core.includes('recent.slice(-5)')); t.match(css, /max-height:min\(300px, 35vh\)/); t.match(css, /overflow-y:auto/);
+  t.match(ui, /История проверки ·/); t.match(ui, /oldTop \+ Math\.max/);
+});
+
+test('manual country change rebuilds queue without starting verifier', async (t) => {
+  const library = [{ code: 'RU10', regions: ['RU'] }, { code: 'DE10', regions: ['DE'] }];
+  const buildQueue = (rows, context) => { const queue = rows.filter((row) => row.regions.includes(context.country)); return { queue, diagnostics: { eligible: queue.length, countryMatchCounts: { match: queue.length, global: 0, unknown: 0, mismatch: rows.length - queue.length } } }; };
+  const harness = createHarness({ library, countrySettings: { promoCountryMode: 'MANUAL', promoCountry: 'RU' }, buildQueue });
+  let view = await harness.controller.initialize(); t.equal(view.countryCode, 'RU'); t.equal(view.applicableCount, 1);
+  view = await harness.controller.setCountry('DE');
+  t.equal(view.countryCode, 'DE'); t.equal(view.countryMode, 'MANUAL'); t.equal(view.applicableCount, 1); t.equal(harness.commands.some((row) => row.type === 'CH_TEST_PROMOS'), false);
+  t.equal(harness.savedCountrySettings.at(-1).promoCountry, 'DE');
+});
+
+test('AUTO country uses strong RU signal and saved country is only fallback', async (t) => {
+  const context = { checkoutSurfaceDetected: true, available: true, countrySignal: { code: 'RU', strong: true, source: 'ALIEXPRESS_STRUCTURED' } };
+  const view = await createHarness({ context, countrySettings: { promoCountryMode: 'AUTO', promoCountry: 'DE' } }).controller.initialize();
+  t.equal(view.countryCode, 'RU'); t.equal(view.countrySource, 'AUTO'); t.equal(view.countryName, 'Россия');
+});
+
+test('active verification disables and ignores country changes', async (t) => {
+  const session = { status: 'TESTING', codes: ['A1'], current: 'A1', results: [] };
+  const harness = createHarness({ session, countrySettings: { promoCountryMode: 'MANUAL', promoCountry: 'RU' } }); const before = await harness.controller.initialize();
+  const after = await harness.controller.setCountry('DE');
+  t.equal(before.countrySelectionDisabled, true); t.equal(after.countryCode, 'RU'); t.equal(harness.savedCountrySettings.length, 0); t.deep(harness.commands, []);
+});
+
+test('unknown-country toggle rebuilds queue without CH_TEST_PROMOS', async (t) => {
+  const harness = createHarness(); await harness.controller.initialize(); const view = await harness.controller.setIncludeUnknownCountryCodes(false);
+  t.equal(view.includeUnknownCountryCodes, false); t.equal(harness.savedCountrySettings.at(-1).includeUnknownCountryCodes, false);
+  t.equal(harness.commands.some((row) => row.type === 'CH_TEST_PROMOS'), false);
 });
 
 test('persisted session from a different checkout is not exposed as current BEST', async (t) => {

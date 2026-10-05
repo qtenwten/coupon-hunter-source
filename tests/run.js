@@ -1,6 +1,7 @@
 require('./parser.test');
 require('./checkout.test');
 require('./storage.test');
+require('./country-profile.test');
 require('./promo-intelligence.test');
 require('./promo-feed.test');
 require('./feed-signature.test');

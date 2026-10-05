@@ -4,13 +4,14 @@ const { ROOT } = require('./helpers');
 
 test('Manifest V3 uses minimal permissions and no remote executable code', (t) => {
   const manifest = JSON.parse(fs.readFileSync(`${ROOT}/manifest.json`, 'utf8'));
-  t.equal(manifest.manifest_version, 3); t.equal(manifest.version, '3.3.8');
+  t.equal(manifest.manifest_version, 3); t.equal(manifest.version, '3.4.0');
   t.deep(manifest.permissions, ['storage', 'activeTab']);
   t.deep(manifest.background, { service_worker: 'src/background.js' });
   const scripts = manifest.content_scripts.flatMap((row) => row.js || []);
   t.ok(scripts.every((file) => !/^https?:/i.test(file)));
   t.ok(scripts.includes('src/checkout-core.js')); t.ok(scripts.includes('src/verifier-engine.js')); t.ok(scripts.includes('src/safety.js'));
   t.ok(scripts.includes('src/storage.js')); t.ok(scripts.includes('src/page-adapter.js'));
+  t.ok(scripts.includes('src/country-profile.js'));
   t.ok(scripts.includes('src/promo-intelligence.js')); t.ok(scripts.includes('src/promo-tester.js'));
   t.ok(scripts.includes('src/checkout-widget-core.js')); t.ok(scripts.includes('src/checkout-widget.js'));
   t.equal(manifest.content_scripts[0].css.includes('src/content.css'), true);

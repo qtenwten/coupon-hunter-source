@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__COUPON_HUNTER_CHECKOUT_WIDGET_V338__) return;
-  window.__COUPON_HUNTER_CHECKOUT_WIDGET_V338__ = true;
+  if (window.__COUPON_HUNTER_CHECKOUT_WIDGET_V340__) return;
+  window.__COUPON_HUNTER_CHECKOUT_WIDGET_V340__ = true;
 
   const Core = globalThis.CouponHunterCheckoutWidgetCore;
   const Checkout = globalThis.CouponHunterCheckoutCore;
@@ -10,7 +10,8 @@
   const Store = globalThis.CouponHunterStorage;
   const Tester = globalThis.CouponHunterPromoTester;
   const Adapter = globalThis.CouponHunterPageAdapter;
-  if (!Core || !Checkout || !Intelligence || !Limits || !Store || !Tester) return;
+  const Country = globalThis.CouponHunterCountryProfile;
+  if (!Core || !Checkout || !Intelligence || !Limits || !Store || !Tester || !Country) return;
 
   let panel = null; let lastUrl = location.href; let actionMessage = null;
   const currencySymbol = (currency) => ({ RUB: '₽', USD: '$', EUR: '€', GBP: '£' }[currency] || currency || '');
@@ -41,6 +42,17 @@
       <div class="ch-head"><div><span class="ch-brand">Coupon Hunter</span> <span class="ch-status" data-ch="status">готовлю базу…</span></div><button class="ch-toggle" data-ch="toggle" type="button" title="Свернуть">−</button></div>
       <div class="ch-body ch-checkout-body">
         <div class="ch-promo-stats"><span>Найдено: <b data-ch="found">0</b> кодов</span><span>Подходит для заказа: <b data-ch="applicable">0</b></span></div>
+        <div class="ch-country">
+          <label>Страна промокодов
+            <select data-ch="country-select">
+              <option value="AUTO">Авто</option><option value="RU">Россия</option><option value="DE">Германия</option><option value="GB">Великобритания</option>
+              <option value="US">США</option><option value="AU">Австралия</option><option value="CZ">Чехия</option><option value="HU">Венгрия</option><option value="CL">Чили</option>
+            </select>
+          </label>
+          <div data-ch="country-source">Страна не определена</div>
+          <label class="ch-country-unknown"><input data-ch="include-unknown" type="checkbox" checked> Проверять коды с неизвестным регионом</label>
+          <div data-ch="country-counts">MATCH 0 · GLOBAL 0 · UNKNOWN 0 · исключено 0</div>
+        </div>
         <div class="ch-ready-message" data-ch="message">Проверяю состав заказа…</div>
         <button class="ch-primary-wide" data-ch="start" type="button">Подобрать лучший промокод</button>
         <div class="ch-checkout-diagnostics" data-ch="diagnostics" hidden>
@@ -64,6 +76,7 @@
           <div class="ch-promo-stats"><span>Рабочих: <b data-ch="working-count">0</b></span><span>Отклонено: <b data-ch="rejected-count">0</b></span><span>Не определено: <b data-ch="unknown-count">0</b></span></div>
         </div>
         <div class="ch-best" data-ch="best" hidden><span data-ch="best-label">Лучший сейчас</span><b data-ch="best-code">—</b><strong data-ch="best-saving">—</strong></div>
+        <div class="ch-history-title" data-ch="history-title" hidden>История проверки · 0</div>
         <div class="ch-results" data-ch="results"></div>
         <div class="ch-actions ch-checkout-actions"><button class="ch-secondary" data-ch="stop" type="button" hidden>Остановить</button><button class="ch-secondary" data-ch="copy-results" type="button" hidden>Скопировать результаты</button><button data-ch="apply-best" type="button" hidden>Применить лучший</button></div>
       </div>`;
@@ -91,6 +104,8 @@
       render(controller.view());
     });
     for (const input of root.querySelectorAll('input[name="ch-mode"]')) input.addEventListener('change', () => { if (input.checked) controller.setMode(input.value); });
+    root.querySelector('[data-ch="country-select"]').addEventListener('change', async (event) => { actionMessage = null; await controller.setCountry(event.target.value); });
+    root.querySelector('[data-ch="include-unknown"]').addEventListener('change', async (event) => { actionMessage = null; await controller.setIncludeUnknownCountryCodes(event.target.checked); });
     return root;
   }
 
@@ -114,7 +129,7 @@
     if (actionMessage) return actionMessage;
     if (view.message) return view.message;
     if (view.sessionStatus === 'TESTING') return `Проверяем ${view.progress} из ${view.queueCount}`;
-    if (view.completed && view.bestCode) return `Проверено ${view.recentResults.length ? view.progress : 0} кодов. Лучший: −${money(view.bestSaving, view.currency)}`;
+    if (view.completed && view.bestCode) return `Проверено ${view.testedCount} кодов. Лучший: −${money(view.bestSaving, view.currency)}`;
     if (view.state === Core.STATES.COMPLETE_NO_SAVING) return `Проверено ${view.progress} кодов. Подтверждённой экономии не найдено.`;
     if (view.state === Core.STATES.READY) return `${view.applicableCount} промокодов подходят для проверки`;
     if (view.state === Core.STATES.STOPPED) return 'Проверка остановлена пользователем.';
@@ -122,13 +137,14 @@
   }
 
   function renderResults(root, view) {
-    const container = root.querySelector('[data-ch="results"]'); container.replaceChildren();
-    for (const row of view.recentResults) {
-      const item = document.createElement('div'); item.className = `ch-result ch-${row.tone}`;
+    const container = root.querySelector('[data-ch="results"]'); const oldHeight = container.scrollHeight || 0; const oldTop = container.scrollTop || 0; const nearTop = oldTop <= 12; container.replaceChildren();
+    for (const row of view.resultHistory) {
+      const item = document.createElement('div'); item.className = `ch-result ch-${row.tone}${row.best ? ' ch-result-best' : ''}`;
       const icon = row.tone === 'success' ? '✓' : row.tone === 'unknown' ? '?' : '×';
       item.textContent = `${icon} ${row.code} — ${row.tone === 'success' ? `экономия ${money(row.saving, view.currency)}` : row.label}`;
       container.appendChild(item);
     }
+    if (nearTop) container.scrollTop = 0; else container.scrollTop = oldTop + Math.max(0, (container.scrollHeight || 0) - oldHeight);
   }
 
   function render(view) {
@@ -138,6 +154,14 @@
     }
     panel = panel || buildPanel(); panel.hidden = false; panel.setAttribute('data-ch-state', view.state);
     setText(panel, 'status', statusText(view)); setText(panel, 'found', view.foundCount); setText(panel, 'applicable', view.applicableCount ?? '—'); setText(panel, 'message', primaryMessage(view));
+    const countrySelect = panel.querySelector('[data-ch="country-select"]'); const selectValue = view.countryMode === 'MANUAL' ? view.countryCode : 'AUTO';
+    if (view.countryCode && !Array.from(countrySelect.options).some((option) => option.value === view.countryCode)) { const option = document.createElement('option'); option.value = view.countryCode; option.textContent = `${view.countryName} (${view.countryCode})`; countrySelect.appendChild(option); }
+    const autoOption = countrySelect.querySelector('option[value="AUTO"]'); if (autoOption) autoOption.textContent = `Авто: ${view.countryName}`;
+    countrySelect.value = selectValue || 'AUTO'; countrySelect.disabled = view.countrySelectionDisabled;
+    const sourceLabels = { AUTO: 'Авто', USER_MANUAL: 'Выбрана вручную', USER_FALLBACK: 'Сохранённый выбор', UNRESOLVED: 'Не определена' };
+    setText(panel, 'country-source', `Страна: ${view.countryName}${view.countryCode ? ` (${view.countryCode})` : ''} · Источник: ${sourceLabels[view.countrySource] || view.countrySource}`);
+    const unknownToggle = panel.querySelector('[data-ch="include-unknown"]'); unknownToggle.checked = view.includeUnknownCountryCodes; unknownToggle.disabled = view.countrySelectionDisabled;
+    const counts = view.countryMatchCounts; setText(panel, 'country-counts', `MATCH ${counts.match} · GLOBAL ${counts.global} · UNKNOWN ${counts.unknown} · исключено ${counts.mismatch}`);
     const diagnostics = view.diagnostics || {}; const financial = diagnostics.financial || {}; const fingerprint = diagnostics.fingerprint || {}; const items = diagnostics.items || {}; const selectors = diagnostics.selectors || {};
     const diagnosticsRoot = panel.querySelector('[data-ch="diagnostics"]'); diagnosticsRoot.hidden = view.available;
     setText(panel, 'diag-page', diagnostics.pageType || 'UNKNOWN'); setText(panel, 'diag-surface', diagnostics.checkoutSurfaceDetected ? 'YES' : 'NO');
@@ -158,6 +182,7 @@
     const stop = panel.querySelector('[data-ch="stop"]'); stop.hidden = !view.canStop;
     const copyResults = panel.querySelector('[data-ch="copy-results"]'); copyResults.hidden = !view.canCopyResults;
     const apply = panel.querySelector('[data-ch="apply-best"]'); apply.hidden = !view.canApplyBest;
+    const historyTitle = panel.querySelector('[data-ch="history-title"]'); historyTitle.hidden = view.testedCount === 0; setText(panel, 'history-title', `История проверки · ${view.testedCount}`);
     renderResults(panel, view);
   }
 
@@ -165,6 +190,8 @@
     limits: Limits,
     getContext: async () => { await Tester.refreshRecentProductContext(); return Tester.checkoutContext(); },
     loadSession: async () => (await chrome.storage.local.get('promoTestSession')).promoTestSession || null,
+    loadCountrySettings: async () => chrome.storage.local.get(['promoCountryMode', 'promoCountry', 'includeUnknownCountryCodes']),
+    saveCountrySettings: async (settings) => chrome.storage.local.set(settings),
     refreshFeed: async (force) => {
       const response = await runtimeMessage({ type: 'CH_REFRESH_PROMO_FEED', force: force === true });
       if (!response?.ok) throw new Error(response?.error || 'FEED_REFRESH_FAILED'); return response;

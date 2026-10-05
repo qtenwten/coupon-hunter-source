@@ -6,6 +6,7 @@
   const Feed = globalThis.CouponHunterPromoFeed;
   const Limits = globalThis.CouponHunterPromoConstants;
   const Safety = globalThis.CouponHunterSafety;
+  const Country = globalThis.CouponHunterCountryProfile;
   const $ = (id) => document.getElementById(id);
   const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
   const symbol = (currency) => ({ RUB: '₽', USD: '$', EUR: '€' }[currency] || currency || '');
@@ -71,12 +72,15 @@
     let checkout = null;
     try { checkout = await sendToActive({ type: 'CH_GET_CHECKOUT_DIAGNOSTICS' }); } catch (_) {}
     const fingerprint = checkout?.checkoutFingerprint || {}; const state = checkout?.checkoutState || {};
+    const settings = Country.sanitizeSettings(await chrome.storage.local.get(['promoCountryMode', 'promoCountry', 'includeUnknownCountryCodes']));
+    const target = Country.resolveTarget(settings, { code: checkout?.countryCode, source: checkout?.countrySource, strong: !!checkout?.countryCode });
     return {
       currency: state.currency || fingerprint.currency || currentProduct?.currency || null,
       subtotal: state.subtotal, orderTotal: state.total, total: state.total,
       itemIds: (fingerprint.items || []).map((row) => row.itemId).filter(Boolean),
       sellerIds: (fingerprint.items || []).map((row) => row.sellerId).filter(Boolean),
-      region: null, regionConfidence: 0,
+      country: target.code, region: target.code, regionConfidence: target.code ? 1 : 0, includeUnknownCountryCodes: settings.includeUnknownCountryCodes,
+      countryMode: settings.promoCountryMode, countrySource: target.source,
       isNewUser: null, newUserStatusConfidence: 0,
       fingerprintQuality: fingerprint.quality || 'WEAK'
     };
@@ -137,7 +141,7 @@
     try { product = await sendToActive({ type: 'CH_GET_PRODUCT_DIAGNOSTICS' }); } catch (_) {}
     try { checkout = await sendToActive({ type: 'CH_GET_CHECKOUT_DIAGNOSTICS' }); } catch (_) {}
     const { promoTestSession = null } = await chrome.storage.local.get('promoTestSession'); const payload = product || checkout || { pageType: 'UNKNOWN' };
-    const merged = { ...payload, ...(checkout || {}), itemId: product?.itemId || null, skuId: product?.skuId || null, detectedPrice: product?.detectedPrice || null, priceCandidates: product?.priceCandidates || [], detectedPromotions: product?.detectedPromotions || [], couponCandidates: await Store.load(), storageDiagnostics: await Store.storageDiagnostics(), promoIntelligence: lastQueuePlan?.diagnostics || null, checkoutState: checkout?.checkoutState || null, verificationResults: promoTestSession?.results || [], parserVersion: product?.parserVersion || checkout?.parserVersion || '3.3.8', timestamp: new Date().toISOString() };
+    const merged = { ...payload, ...(checkout || {}), itemId: product?.itemId || null, skuId: product?.skuId || null, detectedPrice: product?.detectedPrice || null, priceCandidates: product?.priceCandidates || [], detectedPromotions: product?.detectedPromotions || [], couponCandidates: await Store.load(), storageDiagnostics: await Store.storageDiagnostics(), promoIntelligence: lastQueuePlan?.diagnostics || null, checkoutState: checkout?.checkoutState || null, verificationResults: promoTestSession?.results || [], parserVersion: product?.parserVersion || checkout?.parserVersion || '3.4.0', timestamp: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(merged, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const link = document.createElement('a');
     link.href = url; link.download = `coupon-hunter-debug-${Date.now()}.json`; Safety.safeClick(link, { purpose: 'Скачивание диагностики', intent: 'DOWNLOAD' }); setTimeout(() => URL.revokeObjectURL(url), 1000);
   }

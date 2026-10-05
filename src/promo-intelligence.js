@@ -4,7 +4,10 @@
 
   const Limits = globalThis.CouponHunterPromoConstants || { DEFAULT_LIVE_ATTEMPTS: 30, DEEP_SCAN_LIVE_ATTEMPTS: 50, HARD_LIVE_ATTEMPT_LIMIT: 50, FIELD_HARD_FILTER_CONFIDENCE: 70 };
   const Store = globalThis.CouponHunterStorage;
+  const Country = globalThis.CouponHunterCountryProfile;
   const DAY_MS = 86_400_000;
+  const NEGATIVE_MEMORY_MS = 15 * 60_000;
+  const CONTEXTUAL_NEGATIVES = new Set(['EXPIRED', 'INVALID', 'REGION_RESTRICTED', 'ACCOUNT_RESTRICTED', 'NOT_APPLICABLE_TO_ITEMS', 'SITE_REJECTED']);
   const finite = (value) => Number.isFinite(value) ? value : null;
   const clamp = (value, min = 0, max = 100) => Math.max(min, Math.min(max, value));
   const upperSet = (values) => new Set((Array.isArray(values) ? values : []).filter(Boolean).map((value) => String(value).toUpperCase()));
@@ -19,12 +22,14 @@
 
   function localVerificationMatches(candidate, context = {}) {
     const previous = candidate.lastVerificationContext; if (!previous) return false;
+    const oldCountry = Country?.normalizeCountry(previous.country); const newCountry = Country?.normalizeCountry(context.country || context.region);
+    if ((oldCountry || newCountry) && oldCountry !== newCountry) return false;
     if (previous.currency && context.currency && String(previous.currency).toUpperCase() !== String(context.currency).toUpperCase()) return false;
     const oldItems = upperSet(previous.itemIds); const newItems = upperSet(context.itemIds);
     if (oldItems.size && newItems.size && !intersects(oldItems, newItems)) return false;
     const oldSellers = upperSet(previous.sellerIds); const newSellers = upperSet(context.sellerIds);
     if (oldSellers.size && newSellers.size && !intersects(oldSellers, newSellers)) return false;
-    return !!(previous.currency || oldItems.size || oldSellers.size);
+    return !!(oldCountry || previous.currency || oldItems.size || oldSellers.size);
   }
 
   function confidenceFor(candidate, nowMs = Date.now(), context = {}) {
@@ -38,7 +43,7 @@
     const conflictsPenalty = Math.min(45, (candidate.conflicts?.length || 0) * 12);
     let localHistory = 0;
     if (candidate.verificationStatus === 'VALID_APPLIED' && candidate.verified && localVerificationMatches(candidate, context)) localHistory = 25;
-    else if (['EXPIRED', 'OUT_OF_STOCK'].includes(candidate.verificationStatus)) localHistory = -35;
+    else if (['EXPIRED', 'OUT_OF_STOCK'].includes(candidate.verificationStatus) && localVerificationMatches(candidate, context)) localHistory = -35;
     else if (candidate.verificationStatus === 'UNKNOWN_ERROR') localHistory = -8;
     const overall = clamp(Math.round(sourceTrust * 0.35 + freshness * 0.25 + corroboration + metadataCompleteness * 0.15 + localHistory - conflictsPenalty));
     return { overall, breakdown: { sourceTrust: Math.round(sourceTrust), freshness, corroboration, metadataCompleteness, conflictsPenalty, localHistory, independentSourceGroups: sourceGroups.size } };
@@ -84,9 +89,13 @@
       else if (basis === 'UNKNOWN') { if (eligibility === 'ELIGIBLE') eligibility = 'UNKNOWN'; reasons.push('MINIMUM_SPEND_BASIS_UNKNOWN'); }
     }
 
-    const regions = upperSet(candidate.regions || (candidate.region ? [candidate.region] : []));
-    if (regions.size && context.region && Number(context.regionConfidence || 0) >= 0.7 && !regions.has(String(context.region).toUpperCase()) && reliable('claimedRegions')) { eligibility = 'INELIGIBLE'; reasons.push('REGION_MISMATCH'); }
-    else if (regions.size && !context.region) { if (eligibility === 'ELIGIBLE') eligibility = 'UNKNOWN'; reasons.push('REGION_UNKNOWN'); }
+    const legacyRegions = upperSet(candidate.regions || (candidate.region ? [candidate.region] : []));
+    const legacyTarget = String(context.country || context.region || '').toUpperCase();
+    const country = Country?.classifyCandidate(candidate, context.country || context.region) || {
+      countryMatch: legacyRegions.size && legacyTarget ? (legacyRegions.has(legacyTarget) ? 'MATCH' : 'MISMATCH') : 'UNKNOWN', countries: [...legacyRegions], confidence: legacyRegions.size ? 100 : 0, evidence: legacyRegions.size ? ['EXPLICIT_REGION'] : []
+    };
+    if (country.countryMatch === 'MISMATCH') { eligibility = 'INELIGIBLE'; reasons.push(Country ? 'COUNTRY_MISMATCH' : 'REGION_MISMATCH'); }
+    else if (country.countryMatch === 'UNKNOWN' && context.includeUnknownCountryCodes === false) { eligibility = 'INELIGIBLE'; reasons.push('COUNTRY_UNKNOWN_EXCLUDED'); }
 
     const currencies = upperSet(candidate.currencies || (candidate.currency ? [candidate.currency] : []));
     if (currencies.size && context.currency && !currencies.has(String(context.currency).toUpperCase()) && reliable('claimedCurrency')) { eligibility = 'INELIGIBLE'; reasons.push('CURRENCY_MISMATCH'); }
@@ -103,14 +112,16 @@
     const candidateSellers = upperSet(candidate.sellerIds); const checkoutSellers = upperSet(context.sellerIds);
     if (candidateSellers.size && checkoutSellers.size && !intersects(candidateSellers, checkoutSellers)) { eligibility = 'INELIGIBLE'; reasons.push('SELLER_MISMATCH'); }
 
-    const statusStillCurrent = candidate.lastVerifiedAt && (!candidate.lastSeenAt || Date.parse(candidate.lastVerifiedAt) >= Date.parse(candidate.lastSeenAt));
-    if (statusStillCurrent && ['EXPIRED', 'OUT_OF_STOCK'].includes(candidate.verificationStatus)) { eligibility = 'INELIGIBLE'; reasons.push(`LOCAL_${candidate.verificationStatus}`); }
+    const verifiedAt = Date.parse(candidate.lastVerifiedAt || 0);
+    const statusStillCurrent = Number.isFinite(verifiedAt) && (!candidate.lastSeenAt || verifiedAt >= Date.parse(candidate.lastSeenAt));
+    const recentContextualNegative = statusStillCurrent && CONTEXTUAL_NEGATIVES.has(candidate.verificationStatus) && localVerificationMatches(candidate, context) && nowMs - verifiedAt <= NEGATIVE_MEMORY_MS;
+    if (recentContextualNegative) { eligibility = 'INELIGIBLE'; reasons.push(`LOCAL_${candidate.verificationStatus}`); }
     const savings = estimateSaving(candidate, context); const confidence = confidenceFor(candidate, nowMs, context); const localMatch = localVerificationMatches(candidate, context);
     const applicabilityConfidence = eligibility === 'ELIGIBLE' ? 90 : eligibility === 'UNKNOWN' ? 50 : 100;
     const value = savings.estimatedSaving ?? savings.theoreticalMaxSaving ?? 0;
     const audiencePenalty = candidate.newUsersOnly === true && reasons.includes('NEW_USER_STATUS_UNKNOWN') ? 25 : 0;
     const rankScore = Math.round(value * 1000 + confidence.overall * 10 + applicabilityConfidence - audiencePenalty + (candidate.verificationStatus === 'VALID_APPLIED' && localMatch ? 5000 : 0));
-    return { eligibility, reasons, ...savings, applicabilityConfidence, confidence: confidence.overall, confidenceBreakdown: confidence.breakdown, rankScore };
+    return { eligibility, reasons, ...country, ...savings, applicabilityConfidence, confidence: confidence.overall, confidenceBreakdown: confidence.breakdown, rankScore };
   }
 
   function buildQueue(library = [], context = {}, options = {}) {
@@ -120,12 +131,16 @@
     const nowMs = options.nowMs ?? Date.now();
     const liveLibrary = library.filter((candidate) => (candidate.sourceClaims || []).some((claim) => claim.status !== 'RETRACTED') && (!candidate.expiresAt || Date.parse(candidate.expiresAt) >= nowMs || !(candidate.fieldConfidence?.claimedExpiresAt?.confidence >= (Limits.FIELD_HARD_FILTER_CONFIDENCE || 70))));
     const assessed = liveLibrary.map((candidate) => ({ ...candidate, ...assessCandidate(candidate, context, options) }));
-    const eligible = assessed.filter((row) => row.eligibility !== 'INELIGIBLE').sort((a, b) => b.rankScore - a.rankScore || String(a.code).localeCompare(String(b.code)));
+    const countryPriority = { MATCH: 0, GLOBAL: 1, UNKNOWN: 2, MISMATCH: 3 };
+    const eligible = assessed.filter((row) => row.eligibility !== 'INELIGIBLE').sort((a, b) =>
+      (countryPriority[a.countryMatch] ?? 2) - (countryPriority[b.countryMatch] ?? 2) || b.rankScore - a.rankScore || String(a.code).localeCompare(String(b.code)));
     const queue = eligible.slice(0, limit);
     const filteredReasons = {};
     for (const row of assessed.filter((candidate) => candidate.eligibility === 'INELIGIBLE')) for (const reason of row.reasons) filteredReasons[reason] = (filteredReasons[reason] || 0) + 1;
     const sourceCounts = {};
     for (const row of liveLibrary) for (const category of new Set((row.sourceClaims || []).filter((claim) => claim.status !== 'RETRACTED').map((claim) => claim.category))) sourceCounts[category] = (sourceCounts[category] || 0) + 1;
+    const countryMatchCounts = { match: 0, global: 0, unknown: 0, mismatch: 0 };
+    for (const row of assessed) { const key = String(row.countryMatch || 'UNKNOWN').toLowerCase(); if (Object.prototype.hasOwnProperty.call(countryMatchCounts, key)) countryMatchCounts[key] += 1; }
     return {
       mode, queue, eligibleCandidates: eligible, assessedCandidates: assessed,
       diagnostics: {
@@ -133,7 +148,7 @@
         rankedLiveQueue: queue.length, limit, queueCoversAllEligible: eligible.length <= limit,
         omitted: Math.max(0, eligible.length - queue.length),
         omittedUnknownTheoretical: eligible.slice(limit).filter((row) => !Number.isFinite(row.theoreticalMaxSaving)).length,
-        sourceCounts
+        sourceCounts, countryCode: Country?.normalizeCountry(context.country || context.region), countryMatchCounts
       }
     };
   }
@@ -149,5 +164,5 @@
     return !(session.results || []).some((row) => row.verificationStatus === 'UNKNOWN_ERROR' && (!Number.isFinite(row.theoreticalMaxSaving) || row.theoreticalMaxSaving > bestSaving));
   }
 
-  globalThis.CouponHunterPromoIntelligence = { freshnessScore, localVerificationMatches, confidenceFor, estimateSaving, assessCandidate, buildQueue, shouldEarlyStop, bestKnownProven };
+  globalThis.CouponHunterPromoIntelligence = { NEGATIVE_MEMORY_MS, freshnessScore, localVerificationMatches, confidenceFor, estimateSaving, assessCandidate, buildQueue, shouldEarlyStop, bestKnownProven };
 })();

@@ -5,7 +5,7 @@ const chrome = { runtime: { onMessage: { addListener() {} } }, storage: { local:
 const doc = { documentElement: { lang: 'ru' }, body: { innerText: '' }, querySelectorAll() { return []; }, querySelector() { return null; } };
 const box = load(
   sandbox({ chrome, document: doc, location: { href: 'https://aliexpress.ru/p/trade/confirm.html' }, MutationObserver: FakeMutationObserver, Element: FakeElement }),
-  'src/parser-core.js', 'src/checkout-core.js', 'src/verifier-engine.js', 'src/safety.js', 'src/storage.js', 'src/promo-tester.js'
+  'src/parser-core.js', 'src/checkout-core.js', 'src/verifier-engine.js', 'src/safety.js', 'src/storage.js', 'src/country-profile.js', 'src/promo-tester.js'
 );
 const T = box.CouponHunterPromoTester;
 const P = box.CouponHunterParser;

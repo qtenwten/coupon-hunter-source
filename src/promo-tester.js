@@ -1,13 +1,14 @@
 (() => {
   'use strict';
-  if (window.__COUPON_HUNTER_PROMO_TESTER_V338__) return;
-  window.__COUPON_HUNTER_PROMO_TESTER_V338__ = true;
+  if (window.__COUPON_HUNTER_PROMO_TESTER_V340__) return;
+  window.__COUPON_HUNTER_PROMO_TESTER_V340__ = true;
 
   const P = globalThis.CouponHunterParser;
   const C = globalThis.CouponHunterCheckoutCore;
   const Store = globalThis.CouponHunterStorage;
   const Safety = globalThis.CouponHunterSafety;
   const Engine = globalThis.CouponHunterVerifierEngine;
+  const Country = globalThis.CouponHunterCountryProfile;
   const Limits = globalThis.CouponHunterPromoConstants || { HARD_LIVE_ATTEMPT_LIMIT: 50 };
   const MAX_CODES = Limits.HARD_LIVE_ATTEMPT_LIMIT;
   const RECENT_PRODUCT_CONTEXT_TTL_MS = 30 * 60 * 1000;
@@ -938,6 +939,7 @@
       checkoutSurfaceDetected: context.checkoutSurfaceDetected,
       checkoutSurfaceSignals: context.checkoutSurfaceSignals,
       promoTestingSurface: context.promoTestingSurface,
+      countryDetection: { countryCode: context.countryCode || null, source: context.countrySource || 'NONE', strong: context.countrySignal?.strong === true },
       platformPromoInputFound: selectors.inputFound,
       platformPromoRevealFound: selectors.revealFound,
       financial: C.buildFinancialSnapshot(checkout.financial),
@@ -1130,13 +1132,17 @@
       session.bestKnownProven = session.status === 'COMPLETE' && !!session.bestCode && queueMeta.queueCoversAllEligible === true && !unresolved;
       await saveSession(session);
     }
-    const verificationContext = { currency: session.currency || null, itemIds: (session.checkoutFingerprint?.items || []).map((item) => item.itemId).filter(Boolean), sellerIds: (session.checkoutFingerprint?.items || []).map((item) => item.sellerId).filter(Boolean) };
+    const verificationContext = { country: Country?.normalizeCountry(queueMeta?.countryCode), currency: session.currency || null, itemIds: (session.checkoutFingerprint?.items || []).map((item) => item.itemId).filter(Boolean), sellerIds: (session.checkoutFingerprint?.items || []).map((item) => item.sellerId).filter(Boolean) };
     await Store.upsert((session.results || []).map((row) => ({ ...row, lastStatus: row.verificationStatus, lastMessage: row.verificationMessage, lastDiscount: row.saving, lastVerificationContext: verificationContext })));
     return session;
   }
 
   async function applyBestExplicitly(code) {
     const normalized = Store.normalizeCode(code); const { promoTestSession: session } = await chrome.storage.local.get('promoTestSession');
+    const settings = Country?.sanitizeSettings(await chrome.storage.local.get(['promoCountryMode', 'promoCountry', 'includeUnknownCountryCodes']));
+    const target = Country?.resolveTarget(settings, Country.detectDocumentCountry(document));
+    const sessionCountry = Country?.normalizeCountry(session?.promoIntelligence?.countryCode);
+    if (sessionCountry && sessionCountry !== target?.code) return { status: 'CART_CHANGED', message: 'Страна промокодов отличается от страны проверенной сессии' };
     const response = await verifier.applyBest(normalized, session);
     if (response.status === 'APPLIED') { session.bestApplied = true; session.bestAppliedAt = new Date().toISOString(); session.bestApplicationResult = response.result; await saveSession(session); }
     return response;
@@ -1162,6 +1168,7 @@
     const { binding, pageType, surface } = effectiveCheckoutBinding(checkout);
     const fingerprint = checkout.fingerprint || {};
     const financial = checkout.financial || {};
+    const countrySignal = Country?.detectDocumentCountry(document) || { code: null, strong: false, source: 'NONE' };
     const promoTestingSurface = pageType === 'CHECKOUT' && surface.detected && (surface.platformPromoInputFound || surface.platformPromoRevealFound);
     const checkoutWidgetVisible = pageType === 'CHECKOUT' && surface.detected;
     const reliableIdentity = verifier.fingerprintIsReliable(fingerprint);
@@ -1182,6 +1189,9 @@
       total: financial.total,
       itemIds: (fingerprint.items || []).map((row) => row.itemId).filter(Boolean),
       sellerIds: (fingerprint.items || []).map((row) => row.sellerId).filter(Boolean),
+      countryCode: countrySignal.code || null,
+      countrySource: countrySignal.source || 'NONE',
+      countrySignal,
       region: null,
       regionConfidence: 0,
       isNewUser: null,
@@ -1196,7 +1206,8 @@
 
   async function diagnostics() {
     const { promoTestSession = null, couponCandidates = [] } = await chrome.storage.local.get(['promoTestSession', 'couponCandidates']); const checkout = readCheckout();
-    return { pageType: P.parsePageType(location.href), url: safeUrl(), locale: document.documentElement?.lang || navigator.language || null, checkoutState: checkout.financial, checkoutFingerprint: checkout.fingerprint, selectorMatches: selectorDiagnostics(), couponCandidates, verificationResults: promoTestSession?.results || [], parserVersion: P.parserVersion, timestamp: new Date().toISOString() };
+    const countrySignal = Country?.detectDocumentCountry(document) || { code: null, strong: false, source: 'NONE' };
+    return { pageType: P.parsePageType(location.href), url: safeUrl(), locale: document.documentElement?.lang || navigator.language || null, countryCode: countrySignal.code || null, countrySource: countrySignal.source || 'NONE', checkoutState: checkout.financial, checkoutFingerprint: checkout.fingerprint, selectorMatches: selectorDiagnostics(), couponCandidates, verificationResults: promoTestSession?.results || [], parserVersion: P.parserVersion, timestamp: new Date().toISOString() };
   }
 
   async function executeCommand(message = {}) {

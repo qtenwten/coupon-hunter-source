@@ -180,7 +180,7 @@
       lastVerifiedAt: safeDate(input.lastVerifiedAt), verificationStatus: input.verificationStatus || input.lastStatus || null,
       verificationMessage: input.verificationMessage || input.lastMessage || null,
       saving: finite(input.saving ?? input.lastDiscount), verified: input.verified === true,
-      lastVerificationContext: input.lastVerificationContext && typeof input.lastVerificationContext === 'object' ? { currency: input.lastVerificationContext.currency || null, itemIds: uniqueStrings(input.lastVerificationContext.itemIds, 100), sellerIds: uniqueStrings(input.lastVerificationContext.sellerIds, 100) } : null };
+      lastVerificationContext: input.lastVerificationContext && typeof input.lastVerificationContext === 'object' ? { country: /^[A-Za-z]{2}$/.test(input.lastVerificationContext.country || '') ? String(input.lastVerificationContext.country).toUpperCase() : null, currency: input.lastVerificationContext.currency || null, itemIds: uniqueStrings(input.lastVerificationContext.itemIds, 100), sellerIds: uniqueStrings(input.lastVerificationContext.sellerIds, 100) } : null };
   }
 
   function mergeTwo(previous, row) {

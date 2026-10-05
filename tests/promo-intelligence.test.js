@@ -1,7 +1,7 @@
 const { test } = require('./harness');
 const { sandbox, load } = require('./helpers');
 
-const box = load(sandbox(), 'src/promo-constants.js', 'src/storage.js', 'src/promo-intelligence.js');
+const box = load(sandbox(), 'src/promo-constants.js', 'src/storage.js', 'src/country-profile.js', 'src/promo-intelligence.js');
 const L = box.CouponHunterPromoConstants;
 const S = box.CouponHunterStorage;
 const I = box.CouponHunterPromoIntelligence;
@@ -66,6 +66,33 @@ test('region mismatch filters only with reliable checkout region', (t) => {
   t.ok(I.assessCandidate(candidate, { region: null, regionConfidence: 0 }, { nowMs: NOW }).eligibility !== 'INELIGIBLE');
 });
 
+test('country queue orders MATCH then GLOBAL then UNKNOWN and excludes MISMATCH before limit', (t) => {
+  const rows = [
+    promo('DEONLY', { regions: ['DE'], discountType: 'FIXED', discountAmount: 9000 }),
+    promo('UNKNOWN', { discountType: 'FIXED', discountAmount: 5000 }),
+    promo('GLOBAL1', { regions: ['WORLDWIDE'], discountType: 'FIXED', discountAmount: 10 }),
+    promo('RUMATCH', { regions: ['RU'], discountType: 'FIXED', discountAmount: 5 })
+  ];
+  const plan = I.buildQueue(rows, { country: 'RU', includeUnknownCountryCodes: true }, { nowMs: NOW });
+  t.deep(plan.queue.map((row) => row.code), ['RUMATCH', 'GLOBAL1', 'UNKNOWN']);
+  t.equal(plan.assessedCandidates.find((row) => row.code === 'DEONLY').countryMatch, 'MISMATCH');
+  t.deep(plan.diagnostics.countryMatchCounts, { match: 1, global: 1, unknown: 1, mismatch: 1 });
+});
+
+test('UNKNOWN country codes are included by default and optionally excluded', (t) => {
+  const unknown = promo('UNKNOWN');
+  t.equal(I.buildQueue([unknown], { country: 'RU' }, { nowMs: NOW }).queue.length, 1);
+  const excluded = I.buildQueue([unknown], { country: 'RU', includeUnknownCountryCodes: false }, { nowMs: NOW });
+  t.equal(excluded.queue.length, 0); t.ok(excluded.assessedCandidates[0].reasons.includes('COUNTRY_UNKNOWN_EXCLUDED'));
+});
+
+test('MISMATCH candidates never consume Standard queue slots', (t) => {
+  const mismatches = Array.from({ length: 40 }, (_, index) => promo(`DE${String(index).padStart(4, '0')}`, { regions: ['DE'], discountType: 'FIXED', discountAmount: 10000 - index }));
+  const matches = Array.from({ length: 30 }, (_, index) => promo(`RU${String(index).padStart(4, '0')}`, { regions: ['RU'], discountType: 'FIXED', discountAmount: 100 + index }));
+  const plan = I.buildQueue([...mismatches, ...matches], { country: 'RU' }, { mode: 'STANDARD', nowMs: NOW });
+  t.equal(plan.queue.length, 30); t.ok(plan.queue.every((row) => row.countryMatch === 'MATCH')); t.ok(plan.queue.every((row) => row.regions.includes('RU')));
+});
+
 test('known non-new user is ineligible for a new-user-only code', (t) => {
   const result = I.assessCandidate(promo('NEWONLY10', { newUsersOnly: true }), { isNewUser: false, newUserStatusConfidence: 0.95 }, { nowMs: NOW });
   t.equal(result.eligibility, 'INELIGIBLE'); t.ok(result.reasons.includes('NEW_USER_ONLY'));
@@ -116,6 +143,15 @@ test('local VALID_APPLIED history increases ranking priority', (t) => {
   const verified = promo('LOCAL10', { discountType: 'FIXED', discountAmount: 100, verified: true, verificationStatus: 'VALID_APPLIED', lastVerifiedAt: '2026-10-04T11:58:00Z', lastVerificationContext: { currency: 'RUB', itemIds: ['ITEM-A'] } });
   t.equal(I.buildQueue([plain, verified], { currency: 'RUB', itemIds: ['ITEM-A'] }, { nowMs: NOW }).queue[0].code, 'LOCAL10');
   t.equal(I.localVerificationMatches(verified, { currency: 'USD', itemIds: ['ITEM-A'] }), false);
+});
+
+test('recent RU negative memory does not suppress the same code in DE context', (t) => {
+  const rejected = promo('CONTEXT10', { verificationStatus: 'EXPIRED', verified: true, lastVerifiedAt: '2026-10-04T11:59:00Z', lastVerificationContext: { country: 'RU', currency: 'EUR', itemIds: ['ITEM-A'] } });
+  t.equal(rejected.lastVerificationContext.country, 'RU');
+  const ru = I.assessCandidate(rejected, { country: 'RU', currency: 'EUR', itemIds: ['ITEM-A'] }, { nowMs: NOW });
+  const de = I.assessCandidate(rejected, { country: 'DE', currency: 'EUR', itemIds: ['ITEM-A'] }, { nowMs: NOW });
+  t.equal(ru.eligibility, 'INELIGIBLE'); t.ok(ru.reasons.includes('LOCAL_EXPIRED'));
+  t.ok(de.eligibility !== 'INELIGIBLE'); t.ok(!de.reasons.includes('LOCAL_EXPIRED'));
 });
 
 test('MINIMUM_SPEND_NOT_MET does not globally kill a code', (t) => {
