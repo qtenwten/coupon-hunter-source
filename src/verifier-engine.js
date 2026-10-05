@@ -10,6 +10,10 @@
     CART_CHANGED: 'CART_CHANGED', CHECKOUT_IDENTITY_UNCERTAIN: 'CHECKOUT_IDENTITY_UNCERTAIN',
     REMOVE_FAILED: 'REMOVE_FAILED', INCONCLUSIVE_RESPONSE_STREAK: 'INCONCLUSIVE_RESPONSE_STREAK', ERROR: 'ERROR'
   });
+  const AUTHORITATIVE_REJECTIONS = new Set([
+    'EXPIRED', 'INVALID', 'SITE_REJECTED', 'NOT_STARTED', 'MINIMUM_SPEND_NOT_MET', 'NOT_APPLICABLE_TO_ITEMS',
+    'REGION_RESTRICTED', 'ACCOUNT_RESTRICTED', 'ALREADY_USED', 'OUT_OF_STOCK', 'NOT_COLLECTED'
+  ]);
 
   function createVerifier(adapter, options = {}) {
     const maxCodes = Math.min(options.maxCodes || 25, Limits.HARD_LIVE_ATTEMPT_LIMIT);
@@ -21,7 +25,9 @@
     const responseQuietWindowMs = options.responseQuietWindowMs ?? 175;
     const rejectedBaselineQuietMs = options.rejectedBaselineQuietMs ?? 300;
     const rejectedClearTimeoutMs = options.rejectedClearTimeoutMs ?? 650;
-    const attemptDelayMs = options.attemptDelayMs ?? 275;
+    const attemptDelayMs = options.attemptDelayMs ?? 850;
+    const safetyPauseEvery = options.safetyPauseEvery ?? 10;
+    const safetyPauseMs = options.safetyPauseMs ?? 4_500;
     const unknownStreakLimit = options.unknownStreakLimit || 3;
     const now = () => adapter.now?.() ?? Date.now();
     const iso = () => new Date(now()).toISOString();
@@ -99,6 +105,8 @@
         inputValidationChanged: raw.inputValidationChanged === true,
         applyButtonFound: raw.applyButtonFound === true || applyResult.ok === true,
         appliedIndicatorFound: !!(appliedEvidence?.applied || observation.appliedEvidence?.applied || raw.appliedIndicatorFound),
+        appliedHintFound: raw.appliedHintFound === true,
+        appliedHintSuppressedByExplicitRejection: raw.appliedHintSuppressedByExplicitRejection === true,
         totalBefore: Number.isFinite(before.total) ? before.total : null,
         totalAfter: Number.isFinite(after.total) ? after.total : null,
         totalChanged: Number.isFinite(before.total) && Number.isFinite(after.total) ? Math.abs(before.total - after.total) > 0.01 : false,
@@ -115,12 +123,21 @@
       return fallback && fallback !== 'NO_CONCLUSIVE_SIGNAL' ? fallback : 'AliExpress не показал распознаваемый ответ';
     }
 
+    async function safetyAwareDelay(durationMs) {
+      const started = now();
+      while (now() - started < durationMs) {
+        const safety = await adapter.safetyStatus?.(); if (safety) return safety;
+        const step = Math.max(1, Math.min(250, durationMs - (now() - started)));
+        if (adapter.delay) await adapter.delay(step); else await adapter.waitForSignal(step);
+      }
+      return await adapter.safetyStatus?.() || null;
+    }
+
     async function waitForTerminal(code, baselineCheckout, beforeObservation = {}) {
       const started = now(); let lastObservation = null; let appliedEvidence = { applied: false, confidence: 0, evidenceType: null, snippet: null }; let pendingRejection = null; let meaningfulSignalSeen = false;
       const beforeEvidenceSignature = evidenceSignature(beforeObservation.appliedEvidence);
       while (now() - started < (meaningfulSignalSeen ? verificationTimeoutMs : noSignalTimeoutMs)) {
         const observation = await adapter.observe(code); lastObservation = observation;
-        if (!cartMatches(baselineCheckout, observation.checkout)) return { type: 'CART_CHANGED', observation };
         if ([C.STATUS.CAPTCHA, C.STATUS.RATE_LIMITED].includes(observation.safetyStatus)) return { type: 'SAFETY_STOP', status: observation.safetyStatus, observation };
         const feedback = observation.feedbackText === beforeObservation.feedbackText ? '' : observation.feedbackText || '';
         if (observation.appliedEvidence?.applied && evidenceSignature(observation.appliedEvidence) !== beforeEvidenceSignature) appliedEvidence = observation.appliedEvidence;
@@ -128,19 +145,36 @@
         const financialChanged = C.financialSignature(financialOf(baselineCheckout)) !== C.financialSignature(financialOf(observation.checkout));
         if (appliedEvidence.applied || financialChanged || responseEvidence.promoMutationSeen === true || responseEvidence.responseTextFound === true || responseEvidence.inputValidationChanged === true) meaningfulSignalSeen = true;
         const saving = C.computeSaving(financialOf(baselineCheckout), financialOf(observation.checkout));
+        const responseText = observation.responseEvidence?.responseSnippet || feedback;
+        const textual = C.textOutcome(responseText);
+        if ([C.STATUS.CAPTCHA, C.STATUS.RATE_LIMITED].includes(textual)) return { type: 'SAFETY_STOP', status: textual, observation: { ...observation, feedbackText: responseText } };
+        const authoritativeRejection = AUTHORITATIVE_REJECTIONS.has(textual);
+        const appliedHintFound = appliedEvidence.applied === true || observation.appliedEvidence?.applied === true || responseEvidence.appliedIndicatorFound === true;
+        const sameCart = cartMatches(baselineCheckout, observation.checkout);
+        const beforeTotal = financialOf(baselineCheckout).total; const afterTotal = financialOf(observation.checkout).total;
+        const totalChanged = Number.isFinite(beforeTotal) && Number.isFinite(afterTotal) && Math.abs(beforeTotal - afterTotal) > 0.01;
+        if (authoritativeRejection && (!sameCart || totalChanged)) {
+          return { type: 'CONTRADICTION', status: textual, observation: { ...observation, feedbackText: responseText }, appliedHintFound, reason: !sameCart ? 'REJECTION_WITH_CART_CHANGE' : 'REJECTION_WITH_TOTAL_CHANGE' };
+        }
+        if (!sameCart) return { type: 'CART_CHANGED', observation };
+        if (authoritativeRejection) {
+          const signature = `${textual}|${responseText}`;
+          if (!pendingRejection || pendingRejection.signature !== signature) pendingRejection = { signature, since: now() };
+          if (now() - pendingRejection.since >= responseQuietWindowMs) {
+            return { type: 'REJECTED', status: textual, observation: { ...observation, feedbackText: responseText }, classificationLatencyMs: now() - started, appliedHintFound, appliedHintSuppressedByExplicitRejection: appliedHintFound };
+          }
+        } else pendingRejection = null;
         if (appliedEvidence.applied && Number.isFinite(saving) && saving > 0) {
           const stableCheckout = await waitForStableCheckout(5000);
           if (!cartMatches(baselineCheckout, stableCheckout)) return { type: 'CART_CHANGED', observation: { ...observation, checkout: stableCheckout } };
           const stableSaving = C.computeSaving(financialOf(baselineCheckout), financialOf(stableCheckout));
           if (Number.isFinite(stableSaving) && stableSaving > 0) return { type: 'VALID', observation: { ...observation, checkout: stableCheckout, appliedEvidence }, saving: stableSaving };
         }
-        const responseText = observation.responseEvidence?.responseSnippet || feedback;
-        const textual = C.textOutcome(responseText);
-        if (textual && ![C.STATUS.CAPTCHA, C.STATUS.RATE_LIMITED].includes(textual)) {
+        if (textual && !authoritativeRejection) {
           const signature = `${textual}|${responseText}`;
           if (!pendingRejection || pendingRejection.signature !== signature) pendingRejection = { signature, since: now() };
           if (now() - pendingRejection.since >= responseQuietWindowMs) return { type: 'REJECTED', status: textual, observation: { ...observation, feedbackText: responseText }, classificationLatencyMs: now() - started };
-        } else pendingRejection = null;
+        } else if (!authoritativeRejection) pendingRejection = null;
         const deadline = started + (meaningfulSignalSeen ? verificationTimeoutMs : noSignalTimeoutMs);
         const rejectionRemaining = pendingRejection ? responseQuietWindowMs - (now() - pendingRejection.since) : pollMs;
         await adapter.waitForSignal(Math.max(1, Math.min(pollMs, deadline - now(), rejectionRemaining)));
@@ -153,17 +187,36 @@
       const result = adapter.normalizeCandidate ? adapter.normalizeCandidate(candidate) : { ...candidate };
       result.transitions = [];
       transition(result, C.STATES.IDLE);
+      const beforeEntrySafety = await adapter.safetyStatus?.();
+      if ([C.STATUS.CAPTCHA, C.STATUS.RATE_LIMITED].includes(beforeEntrySafety)) {
+        transition(result, C.STATES.REJECTED, 'SAFETY_STOP_BEFORE_ENTRY');
+        return { ...result, verified: false, verificationStatus: beforeEntrySafety, verificationMessage: beforeEntrySafety, priceBefore: financialOf(baselineCheckout), priceAfter: financialOf(baselineCheckout), saving: 0, safetyStop: true, responseEvidence: responseEvidenceFor({ baselineCheckout }) };
+      }
       transition(result, C.STATES.ENTERING);
       const entered = await adapter.enterCode(result.code);
       if (!entered?.ok) {
+        if ([C.STATUS.CAPTCHA, C.STATUS.RATE_LIMITED].includes(entered?.safetyStatus)) {
+          transition(result, C.STATES.REJECTED, 'SAFETY_STOP_DURING_ENTRY');
+          return { ...result, verified: false, verificationStatus: entered.safetyStatus, verificationMessage: entered.safetyStatus, priceBefore: financialOf(baselineCheckout), priceAfter: financialOf(baselineCheckout), saving: 0, safetyStop: true, responseEvidence: responseEvidenceFor({ baselineCheckout }) };
+        }
         transition(result, C.STATES.UNKNOWN, entered?.message || 'Поле промокода недоступно');
         return { ...result, verified: false, verificationStatus: C.STATUS.UNKNOWN_ERROR, verificationMessage: entered?.message || 'Поле промокода недоступно', priceBefore: financialOf(baselineCheckout), priceAfter: financialOf(baselineCheckout), saving: 0, responseEvidence: responseEvidenceFor({ baselineCheckout }) };
       }
       const before = await adapter.observe(result.code);
+      const beforeApplySafety = before.safetyStatus || await adapter.safetyStatus?.();
+      if ([C.STATUS.CAPTCHA, C.STATUS.RATE_LIMITED].includes(beforeApplySafety)) {
+        transition(result, C.STATES.REJECTED, 'SAFETY_STOP_BEFORE_APPLY');
+        return { ...result, verified: false, verificationStatus: beforeApplySafety, verificationMessage: beforeApplySafety, priceBefore: financialOf(baselineCheckout), priceAfter: financialOf(before.checkout || baselineCheckout), saving: 0, safetyStop: true, responseEvidence: responseEvidenceFor({ baselineCheckout, checkout: before.checkout, observation: before }) };
+      }
       transition(result, C.STATES.APPLYING);
       const applyStartedAt = now();
       const applied = await adapter.clickApply(result.code);
       if (!applied?.ok) {
+        if ([C.STATUS.CAPTCHA, C.STATUS.RATE_LIMITED].includes(applied?.safetyStatus)) {
+          transition(result, C.STATES.REJECTED, 'SAFETY_STOP_BEFORE_CLICK');
+          const finalCapture = await adapter.finishResponseCapture?.() || {};
+          return { ...result, verified: false, verificationStatus: applied.safetyStatus, verificationMessage: applied.safetyStatus, priceBefore: financialOf(baselineCheckout), priceAfter: financialOf(baselineCheckout), saving: 0, safetyStop: true, responseEvidence: responseEvidenceFor({ baselineCheckout, observation: { responseEvidence: finalCapture }, applyResult: applied, startedAt: applyStartedAt }) };
+        }
         transition(result, C.STATES.UNKNOWN, applied?.message || 'Кнопка применения не найдена');
         const finalCapture = await adapter.finishResponseCapture?.() || {};
         const responseEvidence = responseEvidenceFor({ baselineCheckout, observation: { responseEvidence: finalCapture }, applyResult: applied, startedAt: applyStartedAt });
@@ -174,20 +227,23 @@
       const observation = terminal.observation || {}; const finalCapture = await adapter.finishResponseCapture?.() || {};
       observation.responseEvidence = { ...(observation.responseEvidence || {}), ...finalCapture };
       if (Number.isFinite(terminal.classificationLatencyMs)) observation.responseEvidence.classificationLatencyMs = terminal.classificationLatencyMs;
+      if (terminal.appliedHintFound === true) observation.responseEvidence.appliedHintFound = true;
+      if (terminal.appliedHintSuppressedByExplicitRejection === true) observation.responseEvidence.appliedHintSuppressedByExplicitRejection = true;
       let status = C.STATUS.UNKNOWN_ERROR; let verified = false; let reason = 'NO_CONCLUSIVE_SIGNAL';
       if (terminal.type === 'VALID') { status = C.STATUS.VALID_APPLIED; verified = true; reason = 'APPLIED_AND_TOTAL_DECREASED'; }
       else if (terminal.type === 'REJECTED') { status = terminal.status || C.STATUS.UNKNOWN_ERROR; verified = status !== C.STATUS.UNKNOWN_ERROR; reason = 'SITE_RESPONSE'; }
       else if (terminal.type === 'SAFETY_STOP') { status = terminal.status; reason = 'SAFETY_STOP'; }
       else if (terminal.type === 'CART_CHANGED') reason = 'CART_CHANGED';
+      else if (terminal.type === 'CONTRADICTION') reason = terminal.reason || 'CONTRADICTORY_PROMO_STATE';
       const responseEvidence = responseEvidenceFor({ baselineCheckout, checkout: observation.checkout, observation, applyResult: applied, appliedEvidence: terminal.appliedEvidence || observation.appliedEvidence, startedAt: applyStartedAt });
       transition(result, status === C.STATUS.VALID_APPLIED ? C.STATES.APPLIED : status === C.STATUS.UNKNOWN_ERROR ? C.STATES.UNKNOWN : C.STATES.REJECTED, reason);
       return {
         ...result, verified, verificationStatus: status,
         verificationMessage: (status === C.STATUS.UNKNOWN_ERROR ? unknownMessage(responseEvidence, observation.feedbackText || reason) : responseEvidence.responseSnippet || observation.feedbackText || reason).slice(0, 700),
         priceBefore: financialOf(baselineCheckout), priceAfter: financialOf(observation.checkout || baselineCheckout),
-        saving: terminal.type === 'VALID' ? terminal.saving : C.computeSaving(financialOf(baselineCheckout), financialOf(observation.checkout)),
-        lastVerifiedAt: iso(), appliedEvidence: observation.appliedEvidence?.applied ? observation.appliedEvidence : null,
-        checkoutChanged: terminal.type === 'CART_CHANGED', responseEvidence
+        saving: terminal.type === 'VALID' ? terminal.saving : terminal.type === 'CONTRADICTION' ? null : C.computeSaving(financialOf(baselineCheckout), financialOf(observation.checkout)),
+        lastVerifiedAt: iso(), appliedEvidence: terminal.type === 'REJECTED' && terminal.appliedHintSuppressedByExplicitRejection ? null : observation.appliedEvidence?.applied ? observation.appliedEvidence : null,
+        checkoutChanged: terminal.type === 'CART_CHANGED', contradictoryState: terminal.type === 'CONTRADICTION', responseEvidence
       };
     }
 
@@ -207,7 +263,7 @@
       const session = {
         version: 4, status: SESSION_STATUS.TESTING, origin: binding.origin, pageClass: binding.pageClass, pathClass: binding.pathClass || null,
         codes: candidates.map((row) => row.code), current: null, baseline: null, checkoutFingerprint: null,
-        currency: null, results: [], bestCode: null, createdAt: iso(), startedAt: iso(), stopReason: null, consecutiveUnknowns: 0
+        currency: null, results: [], bestCode: null, createdAt: iso(), startedAt: iso(), stopReason: null, consecutiveUnknowns: 0, applyAttempts: 0, safetyPauseCount: 0
       };
       await persist(session);
       if (!['CART', 'CHECKOUT'].includes(binding.pageClass)) { session.status = SESSION_STATUS.UNAVAILABLE; session.stopReason = 'Откройте корзину или checkout AliExpress'; await persist(session); return session; }
@@ -220,6 +276,8 @@
         await persist(session); return session;
       }
       if (!Number.isFinite(session.baseline?.total)) { session.status = SESSION_STATUS.UNAVAILABLE; session.stopReason = 'Не удалось надёжно определить итоговую сумму заказа'; await persist(session); return session; }
+      const initialSafety = await adapter.safetyStatus?.();
+      if (initialSafety) { session.status = SESSION_STATUS.SAFETY_STOP; session.stopReason = initialSafety; await persist(session); return session; }
       const ready = await adapter.ensureReady();
       if (!ready?.ok) { session.status = SESSION_STATUS.UNAVAILABLE; session.stopReason = ready?.message || 'Поле промокода не найдено'; await persist(session); return session; }
       const existing = await adapter.existingCode();
@@ -240,15 +298,18 @@
         }
         session.current = candidate.code; await persist(session);
         const result = await applyCandidate(candidate, baselineCheckout); session.results.push(result); await persist(session);
+        if (result.responseEvidence?.applyClicked === true) session.applyAttempts += 1;
         if (result.checkoutChanged) { session.status = SESSION_STATUS.CART_CHANGED; session.stopReason = 'Структура корзины изменилась во время проверки'; break; }
+        if (result.contradictoryState) { session.status = SESSION_STATUS.SAFETY_STOP; session.stopReason = 'CONTRADICTORY_PROMO_STATE'; break; }
         if ([C.STATUS.CAPTCHA, C.STATUS.RATE_LIMITED].includes(result.verificationStatus)) { session.status = SESSION_STATUS.SAFETY_STOP; session.stopReason = result.verificationStatus; break; }
         if (C.requiresRemovalBeforeNext(result)) {
           const restoration = await restoreBaseline(result.code, baselineCheckout, result); result.baselineRestored = restoration.restored;
           if (!restoration.restored) { session.status = restoration.status; session.stopReason = restoration.reason; await persist(session); break; }
         } else {
           await adapter.clearCode();
+          const credibleAppliedState = result.responseEvidence?.appliedIndicatorFound === true && result.responseEvidence?.appliedHintSuppressedByExplicitRejection !== true;
           const conclusiveUnchangedRejection = result.verified === true && result.verificationStatus !== C.STATUS.UNKNOWN_ERROR &&
-            result.verificationStatus !== C.STATUS.VALID_APPLIED && result.responseEvidence?.totalChanged === false && result.responseEvidence?.appliedIndicatorFound !== true;
+            result.verificationStatus !== C.STATUS.VALID_APPLIED && result.responseEvidence?.totalChanged === false && credibleAppliedState === false;
           let responseCleared = false;
           if (conclusiveUnchangedRejection && adapter.waitForRejectedClear) responseCleared = await adapter.waitForRejectedClear(result.responseEvidence?.responseSnippet || null, rejectedClearTimeoutMs);
           const useFastBaseline = conclusiveUnchangedRejection && (responseCleared || !adapter.waitForRejectedClear);
@@ -265,7 +326,11 @@
           session.stopReason = `Остановлено: ${unknownStreakLimit} неопределённых ответа подряд. AliExpress три раза подряд не дал распознаваемый результат. Проверка остановлена, чтобы не делать лишние попытки.`;
           await persist(session); break;
         }
-        await persist(session); await adapter.delay(attemptDelayMs);
+        await persist(session);
+        const useSafetyPause = session.applyAttempts > 0 && safetyPauseEvery > 0 && session.applyAttempts % safetyPauseEvery === 0;
+        if (useSafetyPause) session.safetyPauseCount += 1;
+        const delayedSafety = await safetyAwareDelay(useSafetyPause ? safetyPauseMs : attemptDelayMs);
+        if (delayedSafety) { session.status = SESSION_STATUS.SAFETY_STOP; session.stopReason = delayedSafety; await persist(session); break; }
       }
       const best = C.sortVerificationResults(session.results).find(C.isBestEligible);
       session.bestCode = best?.code || null; session.current = null;
@@ -291,7 +356,7 @@
       return { status: 'APPLIED', result };
     }
 
-    return { run, applyBest, waitForStableCheckout, waitForTerminal, applyCandidate, restoreBaseline, fingerprintIsReliable, cartMatches, baselineMatches };
+    return { run, applyBest, waitForStableCheckout, waitForTerminal, applyCandidate, restoreBaseline, fingerprintIsReliable, cartMatches, baselineMatches, safetyAwareDelay };
   }
 
   globalThis.CouponHunterVerifierEngine = { SESSION_STATUS, createVerifier };

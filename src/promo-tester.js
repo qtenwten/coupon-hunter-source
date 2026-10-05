@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__COUPON_HUNTER_PROMO_TESTER_V337__) return;
-  window.__COUPON_HUNTER_PROMO_TESTER_V337__ = true;
+  if (window.__COUPON_HUNTER_PROMO_TESTER_V338__) return;
+  window.__COUPON_HUNTER_PROMO_TESTER_V338__ = true;
 
   const P = globalThis.CouponHunterParser;
   const C = globalThis.CouponHunterCheckoutCore;
@@ -1012,20 +1012,25 @@
   }
 
   function appliedIndicator(code, input = findPlatformPromoInput()) {
-    const upper = String(code || '').toUpperCase(); const candidates = []; let node = input?.parentElement;
-    for (let depth = 0; node && depth < 4; depth += 1, node = node.parentElement) candidates.push(node);
-    candidates.push(...Array.from(document.querySelectorAll('[class*="promo" i],[class*="coupon" i],[class*="voucher" i],[class*="discount" i],[aria-live],[role="status"],[role="alert"]')).slice(0, 600));
+    const upper = String(code || '').toUpperCase(); const localCandidates = []; let node = input?.parentElement; let localRoot = null;
+    for (let depth = 0; node && depth < 4; depth += 1, node = node.parentElement) {
+      localCandidates.push(node);
+      const metadata = responseContainerMetadata(node); const text = normalize(node.innerText || node.textContent || '');
+      if (!localRoot && (RESPONSE_CONTAINER_SEMANTIC.test(metadata) || PLATFORM_PROMO_CONTROL.test(text) || (depth === 0 && APPLIED_TEXT.test(text) && PROMO_WORD.test(text)))) localRoot = node;
+    }
+    const localDescendants = Array.from(localRoot?.querySelectorAll?.('[class*="promo" i],[class*="coupon" i],[class*="voucher" i],[aria-live],[role="status"],[role="alert"]') || []).slice(0, 120);
+    const globalCandidates = Array.from(document.querySelectorAll('[class*="promo" i],[class*="coupon" i],[class*="voucher" i],[aria-live],[role="status"],[role="alert"]')).slice(0, 600);
+    const candidates = [...new Set([...localCandidates, ...localDescendants, ...globalCandidates])];
     let best = { applied: false, confidence: 0, evidenceType: null, snippet: null };
-    for (const element of [...new Set(candidates)]) {
+    for (const element of candidates) {
       if (!Safety.isVisible(element)) continue;
       const text = normalize(element.innerText || element.textContent || element.getAttribute?.('aria-label') || ''); if (!text || text.length > 1200) continue;
       const context = normalize(`${text} ${element.parentElement?.innerText || element.parentElement?.textContent || ''}`).slice(0, 1800);
-      let confidence = 0; let evidenceType = null;
+      const promoLocal = !!localRoot && isWithin(localRoot, element); let confidence = 0; let evidenceType = null;
       if (upper && context.toUpperCase().includes(upper) && /(?:applied|active|selected|примен[её]н|актив|удалить|remove)/i.test(context)) { confidence = 95; evidenceType = 'CODE_AND_STATE'; }
-      else if (APPLIED_TEXT.test(context) && PROMO_WORD.test(context)) { confidence = 82; evidenceType = 'PROMO_SUCCESS_TEXT'; }
-      const remove = Array.from(element.querySelectorAll?.('button,[role="button"],a') || []).find((control) => scoreRemoveControl(control, { code, input }) >= 100);
+      else if (promoLocal && APPLIED_TEXT.test(context) && PROMO_WORD.test(context)) { confidence = 82; evidenceType = 'LOCAL_PROMO_SUCCESS_TEXT'; }
+      const remove = promoLocal ? Array.from(element.querySelectorAll?.('button,[role="button"],a') || []).find((control) => scoreRemoveControl(control, { code, input }) >= 100) : null;
       if (remove && confidence < 85) { confidence = 85; evidenceType = 'PROMO_REMOVE_CONTROL'; }
-      if ((input?.disabled || input?.readOnly || input?.getAttribute?.('aria-disabled') === 'true') && PROMO_WORD.test(context) && confidence < 65) { confidence = 65; evidenceType = 'PROMO_INPUT_STATE'; }
       if (confidence > best.confidence) best = { applied: confidence >= 65, confidence, evidenceType, snippet: P.safeSnippet(element) };
     }
     return best;
@@ -1043,9 +1048,29 @@
     return null;
   }
 
+  const CHALLENGE_SELECTOR = 'iframe,[role="dialog"],[aria-modal="true"],[role="alert"],[id*="captcha" i],[class*="captcha" i],[data-testid*="captcha" i],[id*="geetest" i],[class*="geetest" i],[id*="challenge" i],[class*="challenge" i],[id*="security" i],[class*="security" i],[class*="modal" i]';
+  const CHALLENGE_STRONG_TEXT = /(?:captcha|geetest|security\s*verification|verify\s*(?:you\s*are\s*)?human|robot\s*verification|slide\s*to\s*verify|провер(?:ка|ьте).*(?:робот|безопасност)|验证码|滑块)/i;
+  const CHALLENGE_BRANDED_TEXT = /(?:(?:aliexpress|alibaba).{0,40}(?:security|challenge)|(?:security|challenge).{0,40}(?:aliexpress|alibaba)|security\s*challenge)/i;
+  const CHALLENGE_METADATA = /(?:captcha|geetest|(?:^|[-_\s])challenge(?:[-_\s]|$)|security[^\s]{0,50}(?:challenge|verification|verify|check)|human[-_\s]*verification|robot[-_\s]*verification)/i;
+
+  function visibleSecurityChallenge() {
+    const candidates = Array.from(document.querySelectorAll(CHALLENGE_SELECTOR)).slice(0, 500);
+    for (const element of candidates) {
+      if (!Safety.isVisible(element)) continue;
+      const metadata = normalize(`${element.id || ''} ${element.className || ''} ${element.getAttribute?.('data-testid') || ''} ${element.getAttribute?.('aria-label') || ''} ${element.getAttribute?.('title') || ''} ${element.getAttribute?.('src') || ''} ${element.getAttribute?.('name') || ''}`).slice(0, 1000);
+      const text = normalize(element.innerText || element.textContent || '').slice(0, 2000);
+      const iframe = String(element.tagName || '').toUpperCase() === 'IFRAME'; const dialog = element.getAttribute?.('role') === 'dialog' || element.getAttribute?.('aria-modal') === 'true' || /modal/i.test(String(element.className || ''));
+      if (CHALLENGE_STRONG_TEXT.test(text) || CHALLENGE_BRANDED_TEXT.test(text) || CHALLENGE_BRANDED_TEXT.test(metadata) || CHALLENGE_METADATA.test(metadata) || (dialog && /challenge/i.test(text) && /(?:verify|security|human|robot|aliexpress|alibaba)/i.test(text))) {
+        return { detected: true, evidenceType: iframe ? 'VISIBLE_CHALLENGE_IFRAME' : dialog ? 'VISIBLE_CHALLENGE_DIALOG' : 'VISIBLE_CHALLENGE_CONTAINER', tag: String(element.tagName || '').toLowerCase() };
+      }
+    }
+    return { detected: false, evidenceType: null, tag: null };
+  }
+
   function safetyStopStatus() {
+    if (visibleSecurityChallenge().detected) return C.STATUS.CAPTCHA;
     const text = normalize(document.body?.innerText || '').slice(0, 120_000); const status = C.textOutcome(text);
-    return [C.STATUS.CAPTCHA, C.STATUS.RATE_LIMITED].includes(status) ? status : null;
+    return status === C.STATUS.RATE_LIMITED ? status : null;
   }
 
   async function saveSession(session) { await chrome.storage.local.set({ promoTestSession: session }); }
@@ -1060,12 +1085,15 @@
     readCheckout: async () => readCheckout(),
     readStableCheckout: async (timeout) => waitForStableCheckout(timeout),
     enterCode: async (code) => {
+      const initialSafety = safetyStopStatus(); if (initialSafety) return { ok: false, safetyStatus: initialSafety, message: initialSafety };
       const input = await ensurePromoInput(); if (!input) return { ok: false, message: 'Поле промокода не найдено' };
+      const readySafety = safetyStopStatus(); if (readySafety) return { ok: false, safetyStatus: readySafety, message: readySafety };
       nativeSetInput(input, ''); await waitForDomSignal(120); nativeSetInput(input, code); return { ok: true };
     },
     clickApply: async () => {
       const input = findPlatformPromoInput();
       const button = await waitForCondition(() => findApplyButton(input), 2500);
+      const safety = safetyStopStatus(); if (safety) return { ok: false, safetyStatus: safety, message: safety, responseEvidence: { applyClicked: false, applyButtonFound: !!button } };
       const confirmed = isConfirmedPromoApplyControl(button, input); const capture = startPromoResponseCapture(input, confirmed ? button : null);
       if (!confirmed) return { ok: false, message: 'AliExpress не показал безопасную кнопку применения; результат кода не подтверждён', responseEvidence: updatePromoResponseCapture(capture) };
       clickConfirmedPromoApply(button, input, capture);
@@ -1200,7 +1228,7 @@
   globalThis.CouponHunterPromoTester = {
     normalizeCodes, normalizeCandidateQueue, inputScore, findPlatformPromoInput, findPlatformPromoRevealControl, ensurePromoInput, findPromoInputContainer, findPromoResponseContainer, isAliExpressIconApply, isConfirmedPromoApplyControl, clickConfirmedPromoApply, applyControlDiagnostics, scoreApplyControl, scoreRemoveControl, findApplyButton, findRemoveButton,
     safePromoResponseText, promoResponseScope, collectPromoResponseFragments, startPromoResponseCapture, updatePromoResponseCapture, finishPromoResponseCapture, waitForPromoResponseCleared,
-    readBreakdown, readCheckout, summaryRows, checkoutItems, selectedShippingMethod, appliedIndicator, existingPlatformCode, selectorDiagnostics, diagnostics,
+    readBreakdown, readCheckout, summaryRows, checkoutItems, selectedShippingMethod, appliedIndicator, existingPlatformCode, visibleSecurityChallenge, safetyStopStatus, selectorDiagnostics, diagnostics,
     checkoutContext, checkoutSurfaceEvidence, effectiveCheckoutBinding, safeWidgetDiagnostics, visibleCheckoutLines,
     refreshRecentProductContext, setRecentProductContext, recentProductContextState, executeCommand,
     isForbiddenActionLabel: Safety.isForbiddenActionLabel

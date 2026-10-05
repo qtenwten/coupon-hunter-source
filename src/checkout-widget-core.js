@@ -77,6 +77,8 @@
       inputValidationChanged: value.inputValidationChanged === true,
       applyButtonFound: value.applyButtonFound === true,
       appliedIndicatorFound: value.appliedIndicatorFound === true,
+      appliedHintFound: value.appliedHintFound === true,
+      appliedHintSuppressedByExplicitRejection: value.appliedHintSuppressedByExplicitRejection === true,
       totalBefore: finite(value.totalBefore), totalAfter: finite(value.totalAfter),
       totalChanged: value.totalChanged === true,
       responseTextFound: value.responseTextFound === true && !!safeResultText(value.responseSnippet),
@@ -104,7 +106,8 @@
 
   function safetyMessage(session) {
     const reason = String(session?.stopReason || '');
-    if (/CAPTCHA/i.test(reason)) return 'AliExpress запросил проверку безопасности. Очередь остановлена без повторных попыток.';
+    if (/CAPTCHA/i.test(reason)) return 'AliExpress запросил проверку безопасности. Пройдите её вручную и запустите поиск снова.';
+    if (/CONTRADICTORY_PROMO_STATE/i.test(reason)) return 'AliExpress одновременно показал отклонение промокода и изменение заказа. Проверка остановлена.';
     if (/RATE_LIMITED/i.test(reason)) return 'AliExpress ограничил частоту попыток. Очередь остановлена без автоматического повтора.';
     if (session?.status === 'REMOVE_FAILED') return 'Не удалось безопасно удалить проверенный код. Очередь остановлена.';
     if (session?.status === 'CART_CHANGED') return 'Состав корзины изменился. Проверка остановлена.';

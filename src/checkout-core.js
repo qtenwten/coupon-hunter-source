@@ -139,6 +139,7 @@
   }
 
   function requiresRemovalBeforeNext(result) {
+    if (result?.responseEvidence?.appliedHintSuppressedByExplicitRejection === true) return false;
     return result?.verificationStatus === STATUS.VALID_APPLIED || !!result?.appliedEvidence;
   }
 

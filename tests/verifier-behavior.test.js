@@ -9,7 +9,7 @@ class FakeCheckoutEnvironment {
   constructor(behaviors = {}, options = {}) {
     this.time = 1_700_000_000_000; this.behaviors = behaviors; this.options = options;
     this.baselineFinancial = { subtotal: 9990, shipping: 0, tax: 0, discount: 0, total: 9990, currency: 'RUB', ...(options.financial || {}) };
-    this.financial = { ...this.baselineFinancial }; this.feedback = ''; this.safety = null;
+    this.financial = { ...this.baselineFinancial }; this.feedback = ''; this.safety = options.safety || null;
     this.applied = false; this.currentCode = null; this.events = []; this.actions = []; this.actionTimes = []; this.sessions = []; this.responseEvidence = null;
     this.items = options.items || [{ itemId: 'ITEM-A', skuId: 'SKU-A', quantity: 1, sellerId: 'STORE-A' }];
     this.shippingMethodId = options.shippingMethodId || 'STANDARD';
@@ -44,10 +44,10 @@ class FakeCheckoutEnvironment {
       getBinding: () => ({ origin: this.origin, pageClass: this.pageClass, pathClass: this.pathClass }),
       normalizeCandidates: (rows) => rows.map((row) => typeof row === 'string' ? { code: row, source: 'TEST' } : row),
       normalizeCandidate: (row) => ({ ...row, verified: false }),
-      ensureReady: async () => ({ ok: true }), existingCode: async () => null,
+      ensureReady: async () => { this.actions.push('ensure-ready'); return { ok: true }; }, existingCode: async () => null,
       readCheckout: async () => { this.applyDue(); return this.checkout(); },
       readStableCheckout: async () => { this.applyDue(); return this.checkout(); },
-      enterCode: async (code) => { this.currentCode = code; this.feedback = ''; this.responseEvidence = null; this.applied = !!this.behaviors[code]?.staleApplied; this.actions.push(`enter:${code}`); this.actionTimes.push({ action: `enter:${code}`, at: this.time }); return { ok: true }; },
+      enterCode: async (code) => { this.currentCode = code; this.feedback = ''; this.responseEvidence = null; this.applied = !!this.behaviors[code]?.staleApplied; this.actions.push(`enter:${code}`); this.actionTimes.push({ action: `enter:${code}`, at: this.time }); if (this.behaviors[code]?.safetyOnEnter) this.safety = this.behaviors[code].safetyOnEnter; return { ok: true }; },
       clickApply: async (code) => {
         this.actions.push(`apply:${code}`); this.actionTimes.push({ action: `apply:${code}`, at: this.time }); this.applyStartedAt = this.time; const behavior = this.behaviors[code] || {};
         for (const event of behavior.events || []) this.events.push({ ...event, at: this.time + (event.delay || 0) });
@@ -85,7 +85,7 @@ class FakeCheckoutEnvironment {
         this.time += behavior.responseClearDelay || 0; return true;
       },
       safetyStatus: async () => this.safety, isCancelled: () => false,
-      delay: async (ms) => { this.time += ms; this.applyDue(); },
+      delay: async (ms) => { this.actions.push(`delay:${ms}`); this.time += ms; this.applyDue(); },
       persist: async (session) => { this.sessions.push(JSON.parse(JSON.stringify(session))); }
     };
   }
@@ -105,7 +105,7 @@ test('PromoTester CASE A: valid code is measured, removed and baseline restored 
   t.equal(session.origin, 'https://aliexpress.ru'); t.equal(session.pageClass, 'CHECKOUT'); t.equal(session.pathClass, '/p/trade/confirm.html');
   t.equal(session.currency, 'RUB'); t.equal(session.baseline.total, 9990); t.ok(!!session.checkoutFingerprint.signature); t.ok(!!session.createdAt);
   t.equal(session.results[0].saving, 1200); t.equal(session.results[0].baselineRestored, true);
-  t.deep(Object.keys(session.results[0].responseEvidence), ['applyClicked', 'responseContainerFound', 'responseContainerStrategy', 'promoMutationSeen', 'inputInvalid', 'inputValidationChanged', 'applyButtonFound', 'appliedIndicatorFound', 'totalBefore', 'totalAfter', 'totalChanged', 'responseTextFound', 'responseSource', 'responseSnippet', 'classificationLatencyMs', 'elapsedMs']);
+  t.deep(Object.keys(session.results[0].responseEvidence), ['applyClicked', 'responseContainerFound', 'responseContainerStrategy', 'promoMutationSeen', 'inputInvalid', 'inputValidationChanged', 'applyButtonFound', 'appliedIndicatorFound', 'appliedHintFound', 'appliedHintSuppressedByExplicitRejection', 'totalBefore', 'totalAfter', 'totalChanged', 'responseTextFound', 'responseSource', 'responseSnippet', 'classificationLatencyMs', 'elapsedMs']);
   t.equal(session.results[0].responseEvidence.applyClicked, true); t.equal(session.results[0].responseEvidence.appliedIndicatorFound, true);
   t.equal(session.results[0].responseEvidence.totalBefore, 9990); t.equal(session.results[0].responseEvidence.totalAfter, 8790); t.equal(session.results[0].responseEvidence.totalChanged, true);
   t.deep(session.results[0].transitions.map((row) => row.state), ['IDLE','ENTERING','APPLYING','WAITING_RESPONSE','APPLIED','REMOVING','RESTORING_BASELINE']);
@@ -189,6 +189,49 @@ test('immediate INVALID response does not wait for full verification timeout', a
   t.equal(result.verificationStatus, C.STATUS.INVALID); t.equal(result.verified, true); t.ok(result.responseEvidence.classificationLatencyMs <= 250);
 });
 
+test('AEB100 explicit EXPIRED rejection suppresses false applied hint and continues', async (t) => {
+  const phrase = 'Промокод больше не действует. Попробуйте ввести другой';
+  const env = new FakeCheckoutEnvironment({
+    AEB100: { events: [{ delay: 0, applied: true, feedback: phrase }], removeFailure: true },
+    NEXT: { events: [{ delay: 0, feedback: 'This promo code is invalid' }] }
+  });
+  const session = await verifierFor(env).run(['AEB100', 'NEXT']); const result = session.results[0];
+  t.equal(result.verificationStatus, C.STATUS.EXPIRED); t.equal(result.verified, true); t.equal(result.saving, 0); t.equal(result.appliedEvidence, null);
+  t.equal(result.responseEvidence.appliedIndicatorFound, true); t.equal(result.responseEvidence.appliedHintFound, true); t.equal(result.responseEvidence.appliedHintSuppressedByExplicitRejection, true);
+  t.ok(!env.actions.includes('remove:AEB100')); t.ok(env.actions.includes('clear:AEB100')); t.ok(env.actions.includes('enter:NEXT')); t.equal(session.status, 'COMPLETE');
+});
+
+test('explicit INVALID rejection suppresses false applied hint without Remove', async (t) => {
+  const env = new FakeCheckoutEnvironment({ BAD: { events: [{ delay: 0, applied: true, feedback: 'This promo code is invalid' }], removeFailure: true } });
+  const session = await verifierFor(env).run(['BAD']); const result = session.results[0];
+  t.equal(result.verificationStatus, C.STATUS.INVALID); t.equal(result.appliedEvidence, null); t.equal(result.responseEvidence.appliedHintSuppressedByExplicitRejection, true);
+  t.ok(!env.actions.includes('remove:BAD')); t.ok(env.actions.includes('clear:BAD')); t.equal(session.status, 'COMPLETE');
+});
+
+test('explicit rejection also suppresses a pre-existing unchanged applied hint', async (t) => {
+  const env = new FakeCheckoutEnvironment({ STALE: { staleApplied: true, events: [{ delay: 0, feedback: 'Promo code expired' }], removeFailure: true } });
+  const session = await verifierFor(env).run(['STALE']); const result = session.results[0];
+  t.equal(result.verificationStatus, C.STATUS.EXPIRED); t.equal(result.appliedEvidence, null); t.equal(result.responseEvidence.appliedHintSuppressedByExplicitRejection, true);
+  t.ok(!env.actions.includes('remove:STALE')); t.ok(env.actions.includes('clear:STALE')); t.equal(session.status, 'COMPLETE');
+});
+
+test('explicit EXPIRED response with total decrease fails closed as contradiction', async (t) => {
+  const env = new FakeCheckoutEnvironment({
+    CONFLICT: { events: [{ delay: 0, applied: true, feedback: 'Promo code expired', total: 8790 }] },
+    NEXT: { events: [{ delay: 0, feedback: 'invalid' }] }
+  });
+  const session = await verifierFor(env).run(['CONFLICT', 'NEXT']); const result = session.results[0];
+  t.equal(result.verificationStatus, C.STATUS.UNKNOWN_ERROR); t.equal(result.verified, false); t.equal(result.saving, null); t.equal(result.contradictoryState, true);
+  t.equal(session.status, 'SAFETY_STOP'); t.equal(session.stopReason, 'CONTRADICTORY_PROMO_STATE'); t.ok(!env.actions.includes('enter:NEXT')); t.ok(!env.actions.includes('remove:CONFLICT'));
+});
+
+test('explicit rejection with changed fingerprint fails closed as contradiction', async (t) => {
+  const changed = [{ itemId: 'ITEM-B', skuId: 'SKU-B', quantity: 1, sellerId: 'STORE-B' }];
+  const env = new FakeCheckoutEnvironment({ CONFLICT: { events: [{ delay: 0, applied: true, feedback: 'Promo code expired', items: changed }] } });
+  const session = await verifierFor(env).run(['CONFLICT']);
+  t.equal(session.results[0].contradictoryState, true); t.equal(session.status, 'SAFETY_STOP'); t.equal(session.stopReason, 'CONTRADICTORY_PROMO_STATE');
+});
+
 test('meaningful Applied signal extends observation beyond no-signal deadline', async (t) => {
   const env = new FakeCheckoutEnvironment({ CODE1: { events: [{ delay: 3000, applied: true, name: 'late-applied' }, { delay: 4500, total: 8790, name: 'late-total' }] } });
   const session = await verifierFor(env, { verificationTimeoutMs: 8000, noSignalTimeoutMs: 3250 }).run(['CODE1']);
@@ -260,6 +303,46 @@ test('RATE_LIMITED during verification stops the entire queue', async (t) => {
   const session = await verifierFor(env).run([{ code: 'CODE1' }, { code: 'CODE2' }]);
   t.equal(session.status, 'SAFETY_STOP'); t.equal(session.results[0].verificationStatus, C.STATUS.RATE_LIMITED);
   t.ok(!env.actions.includes('enter:CODE2'));
+});
+
+test('CAPTCHA present after code entry stops before Apply', async (t) => {
+  const env = new FakeCheckoutEnvironment({ CODE1: { safetyOnEnter: C.STATUS.CAPTCHA }, CODE2: { events: [{ feedback: 'invalid' }] } });
+  const session = await verifierFor(env).run(['CODE1', 'CODE2']);
+  t.equal(session.status, 'SAFETY_STOP'); t.equal(session.results[0].verificationStatus, C.STATUS.CAPTCHA);
+  t.ok(env.actions.includes('enter:CODE1')); t.ok(!env.actions.includes('apply:CODE1')); t.ok(!env.actions.includes('enter:CODE2'));
+});
+
+test('CAPTCHA already visible stops before any code entry', async (t) => {
+  const env = new FakeCheckoutEnvironment({ CODE1: { events: [{ feedback: 'invalid' }] } }, { safety: C.STATUS.CAPTCHA });
+  const session = await verifierFor(env).run(['CODE1']);
+  t.equal(session.status, 'SAFETY_STOP'); t.equal(session.stopReason, C.STATUS.CAPTCHA); t.equal(session.results.length, 0);
+  t.ok(!env.actions.includes('ensure-ready')); t.ok(!env.actions.includes('enter:CODE1')); t.ok(!env.actions.includes('apply:CODE1'));
+});
+
+test('default rejected-candidate throttle uses approximately 850ms attempt delay', async (t) => {
+  const env = new FakeCheckoutEnvironment({ A: { events: [{ feedback: 'invalid' }] }, B: { events: [{ feedback: 'invalid' }] } });
+  const verifier = V.createVerifier(env.adapter(), { pollMs: 250, verificationTimeoutMs: 1000, restorationTimeoutMs: 2000, quietWindowMs: 100, safetyPauseEvery: 100 });
+  await verifier.run(['A', 'B']);
+  const clearedAt = env.actionTimes.find((row) => row.action === 'clear:A').at; const nextAt = env.actionTimes.find((row) => row.action === 'enter:B').at;
+  t.ok(nextAt - clearedAt >= 1200); t.ok(nextAt - clearedAt < 1450); t.ok(env.actions.filter((row) => row.startsWith('delay:')).some((row) => row === 'delay:250'));
+});
+
+test('safety pause is inserted after configured Apply batch', async (t) => {
+  const env = new FakeCheckoutEnvironment({ A: { events: [{ feedback: 'invalid' }] }, B: { events: [{ feedback: 'invalid' }] }, C3: { events: [{ feedback: 'invalid' }] } });
+  const session = await verifierFor(env, { safetyPauseEvery: 2, safetyPauseMs: 4500, attemptDelayMs: 10, quietWindowMs: 100 }).run(['A', 'B', 'C3']);
+  const clearedAt = env.actionTimes.find((row) => row.action === 'clear:B').at; const nextAt = env.actionTimes.find((row) => row.action === 'enter:C3').at;
+  t.equal(session.applyAttempts, 3); t.equal(session.safetyPauseCount, 1); t.ok(nextAt - clearedAt >= 4800);
+});
+
+test('CAPTCHA during safety pause overrides queue and prevents next code', async (t) => {
+  const env = new FakeCheckoutEnvironment({
+    A: { events: [{ feedback: 'invalid' }] },
+    B: { events: [{ feedback: 'invalid' }], clearEvents: [{ delay: 500, safety: C.STATUS.CAPTCHA, name: 'captcha-during-pause' }] },
+    C3: { events: [{ feedback: 'invalid' }] }
+  });
+  const session = await verifierFor(env, { safetyPauseEvery: 2, safetyPauseMs: 4500, attemptDelayMs: 10, quietWindowMs: 100 }).run(['A', 'B', 'C3']);
+  t.equal(session.status, 'SAFETY_STOP'); t.equal(session.stopReason, C.STATUS.CAPTCHA); t.ok(env.actions.includes('event:captcha-during-pause'));
+  t.ok(!env.actions.includes('enter:C3')); t.ok(!env.actions.includes('apply:C3'));
 });
 
 test('PromoTester CASE G: checkout fingerprint change stops even with same total', async (t) => {
@@ -406,7 +489,7 @@ test('verifier defense-in-depth never attempts more than 50 codes', async (t) =>
   t.equal(session.results.length, 50); t.equal(env.actions.filter((row) => row.startsWith('enter:')).length, 50);
 });
 
-test('rejected code clear waits for stable baseline before next code', async (t) => {
+test('rejected code with changed total now fails closed before baseline clearing', async (t) => {
   const env = new FakeCheckoutEnvironment({
     CODE1: {
       events: [{ delay: 0, feedback: 'Minimum spend is not met', total: 9490, name: 'rejected-with-recalc' }],
@@ -415,8 +498,8 @@ test('rejected code clear waits for stable baseline before next code', async (t)
     CODE2: { events: [{ delay: 0, feedback: 'invalid' }] }
   });
   const session = await verifierFor(env).run([{ code: 'CODE1' }, { code: 'CODE2' }]);
-  t.equal(session.status, 'COMPLETE');
-  t.ok(env.actions.indexOf('event:clear-restored-baseline') < env.actions.indexOf('enter:CODE2'));
+  t.equal(session.status, 'SAFETY_STOP'); t.equal(session.stopReason, 'CONTRADICTORY_PROMO_STATE');
+  t.ok(!env.actions.includes('clear:CODE1')); t.ok(!env.actions.includes('enter:CODE2'));
 });
 
 test('checkout fingerprint is rechecked after Remove before queue continues', async (t) => {

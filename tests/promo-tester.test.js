@@ -253,7 +253,7 @@ test('generic promo applied text is evidence without echoing the code', (t) => {
   const input = new FakeElement({ tag: 'input', attrs: { 'aria-label': 'Promo code' } });
   const container = new FakeElement({ text: 'Promo code applied' }); input.parentElement = container;
   const evidence = T.appliedIndicator('CODE1', input);
-  t.equal(evidence.applied, true); t.ok(evidence.confidence >= 65); t.equal(evidence.evidenceType, 'PROMO_SUCCESS_TEXT');
+  t.equal(evidence.applied, true); t.ok(evidence.confidence >= 65); t.equal(evidence.evidenceType, 'LOCAL_PROMO_SUCCESS_TEXT');
 });
 
 for (const message of ['Coupon applied', 'Discount applied', 'Промокод применён', 'Скидка применена']) {
@@ -270,6 +270,52 @@ test('unrelated Applied text is not promo evidence', (t) => {
   const container = new FakeElement({ text: 'Settings applied successfully' }); input.parentElement = container;
   const evidence = T.appliedIndicator('CODE1', input);
   t.equal(evidence.applied, false);
+});
+
+test('generic global coupon DOM is not credible applied evidence', (t) => {
+  const input = new FakeElement({ tag: 'input', attrs: { 'aria-label': 'Promo code' } }); const local = new FakeElement({ text: 'Promo code' }); input.parentElement = local;
+  const generic = new FakeElement({ text: 'Coupon applied', className: 'discount coupon-banner' }); doc.querySelectorAll = () => [generic];
+  const evidence = T.appliedIndicator('AEB100', input); t.equal(evidence.applied, false); t.equal(evidence.confidence, 0); doc.querySelectorAll = () => [];
+});
+
+test('exact tested code with explicit active state remains strong applied evidence', (t) => {
+  const input = new FakeElement({ tag: 'input', attrs: { 'aria-label': 'Promo code' } }); const local = new FakeElement({ text: 'Promo code' }); input.parentElement = local;
+  const exact = new FakeElement({ text: 'AEB100 active', className: 'promo-slot' }); doc.querySelectorAll = () => [exact];
+  const evidence = T.appliedIndicator('AEB100', input); t.equal(evidence.applied, true); t.equal(evidence.evidenceType, 'CODE_AND_STATE'); t.ok(evidence.confidence >= 95); doc.querySelectorAll = () => [];
+});
+
+function challengeStatus(element) {
+  doc.querySelectorAll = () => [element]; const evidence = T.visibleSecurityChallenge(); const status = T.safetyStopStatus(); doc.querySelectorAll = () => []; return { evidence, status };
+}
+
+test('visible CAPTCHA overlay is a hard-stop signal without interaction', (t) => {
+  const overlay = new FakeElement({ tag: 'div', text: 'CAPTCHA — verify you are human', className: 'geetest captcha-overlay' });
+  const result = challengeStatus(overlay); t.equal(result.evidence.detected, true); t.equal(result.status, C.STATUS.CAPTCHA); t.equal(overlay.clicked || 0, 0);
+});
+
+test('visible captcha iframe is a hard-stop signal', (t) => {
+  const frame = new FakeElement({ tag: 'iframe', attrs: { src: 'https://security.aliexpress.com/captcha/challenge', title: 'Security verification' } });
+  const result = challengeStatus(frame); t.equal(result.evidence.detected, true); t.equal(result.evidence.evidenceType, 'VISIBLE_CHALLENGE_IFRAME'); t.equal(result.status, C.STATUS.CAPTCHA); t.equal(frame.clicked || 0, 0);
+});
+
+test('visible security verification dialog is a hard-stop signal', (t) => {
+  const dialog = new FakeElement({ tag: 'div', text: 'Security verification — slide to verify', attrs: { role: 'dialog', 'aria-modal': 'true' } });
+  const result = challengeStatus(dialog); t.equal(result.evidence.detected, true); t.equal(result.evidence.evidenceType, 'VISIBLE_CHALLENGE_DIALOG'); t.equal(result.status, C.STATUS.CAPTCHA);
+});
+
+test('visible challenge modal semantic is detected without clicking it', (t) => {
+  const modal = new FakeElement({ tag: 'div', className: 'challenge-modal' });
+  const result = challengeStatus(modal); t.equal(result.evidence.detected, true); t.equal(result.status, C.STATUS.CAPTCHA); t.equal(modal.clicked || 0, 0);
+});
+
+test('hidden captcha-like DOM is ignored', (t) => {
+  const hidden = new FakeElement({ tag: 'div', text: 'CAPTCHA security verification', className: 'captcha', style: { display: 'none' } });
+  const result = challengeStatus(hidden); t.equal(result.evidence.detected, false); t.equal(result.status, null); t.equal(hidden.clicked || 0, 0);
+});
+
+test('ordinary visible security wording is not CAPTCHA', (t) => {
+  const ordinary = new FakeElement({ tag: 'div', text: 'Security settings and account protection', className: 'security-panel' });
+  const result = challengeStatus(ordinary); t.equal(result.evidence.detected, false); t.equal(result.status, null); t.equal(ordinary.clicked || 0, 0);
 });
 
 function responseSurface({ attribute = null, sourceId = 'promo-response', role = null } = {}) {

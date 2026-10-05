@@ -50,6 +50,7 @@ test('each applied code must be removed and baseline restored before the next', 
   t.equal(C.requiresRemovalBeforeNext(applied), true);
   t.equal(C.requiresRemovalBeforeNext({ verificationStatus: C.STATUS.INVALID }), false);
   t.equal(C.requiresRemovalBeforeNext({ verificationStatus: C.STATUS.UNKNOWN_ERROR, appliedEvidence: { text: 'active' } }), true);
+  t.equal(C.requiresRemovalBeforeNext({ verificationStatus: C.STATUS.EXPIRED, appliedEvidence: { applied: true }, responseEvidence: { appliedHintSuppressedByExplicitRejection: true } }), false);
   t.equal(C.isBaselineRestored({ total: 1000, currency: 'RUB' }, { total: 1000.009, currency: 'RUB' }), true);
   t.equal(C.isBaselineRestored({ total: 1000, currency: 'RUB' }, { total: 999, currency: 'RUB' }), false);
   t.equal(C.financialBaselineMatches(

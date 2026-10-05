@@ -211,9 +211,15 @@ test('closing popup cannot dispatch cancellation; cancel remains a button-only a
 for (const stopReason of ['CAPTCHA', 'RATE_LIMITED']) {
   test(`${stopReason} session renders the checkout safety-stop state`, async (t) => {
     const harness = createHarness({ session: { status: 'SAFETY_STOP', stopReason, codes: ['A1'], results: [] } });
-    const view = await harness.controller.initialize(); t.equal(view.state, 'SAFETY_STOP'); t.match(view.message, /остановлена/i); t.equal(view.canStart, true);
+    const view = await harness.controller.initialize(); t.equal(view.state, 'SAFETY_STOP');
+    t.match(view.message, stopReason === 'CAPTCHA' ? /Пройдите её вручную.*запустите поиск снова/i : /остановлена/i); t.equal(view.canStart, true);
   });
 }
+
+test('contradictory promo state renders fail-closed safety stop', async (t) => {
+  const harness = createHarness({ session: { status: 'SAFETY_STOP', stopReason: 'CONTRADICTORY_PROMO_STATE', codes: ['A1'], results: [] } });
+  const view = await harness.controller.initialize(); t.equal(view.state, 'SAFETY_STOP'); t.match(view.message, /одновременно.*отклонение.*изменение заказа/i);
+});
 
 test('non-checkout AliExpress page does not show checkout widget', async (t) => {
   const harness = createHarness({ context: { checkoutSurfaceDetected: false, available: false } }); const view = await harness.controller.initialize();
